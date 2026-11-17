@@ -1,0 +1,3154 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>通帳OCR転記ツール（Webお試し版）</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2230%22 fill=%22%238e3b3b%22/%3E%3Ctext x=%2232%22 y=%2243%22 font-size=%2230%22 text-anchor=%22middle%22 fill=%22%23fff%22 font-family=%22sans-serif%22 font-weight=%22700%22%3E%E9%80%9A%3C/text%3E%3C/svg%3E">
+<meta name="description" content="通帳のスキャン画像・PDFから日付・摘要・金額・残高を読み取り、CSVや会計ソフト用の仕訳形式で書き出すツール。画像はブラウザの中だけで処理し、外部へ送信しません。">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- 完全オフライン版: 外部フォントは読み込まず、OS標準の日本語フォントを使用 -->
+<style>
+  :root{
+    --ink:#1c2b2f;
+    --ink-soft:#3f5257;
+    --paper:#f4f1ea;
+    --paper-raised:#ffffff;
+    --line:#c9c2b3;
+    --brass:#8a6d3b;
+    --brass-soft:#c9a86a;
+    --seal:#8f3b3b;
+    --pine:#2f4f4a;
+    --ok:#2f6b4f;
+    --warn:#b3651c;
+    --shadow: 0 1px 2px rgba(28,43,47,.06), 0 6px 20px rgba(28,43,47,.06);
+    --radius: 3px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #faf8f2 0%, var(--paper) 45%),
+      var(--paper);
+    color:var(--ink);
+    font-family: -apple-system, "Yu Gothic UI", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
+    line-height:1.7;
+  }
+  .wrap{ max-width:980px; margin:0 auto; padding:48px 24px 96px; }
+
+  /* ---------- Header : hanko / ledger seal motif ---------- */
+  header{
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:24px; margin-bottom:8px; padding-bottom:28px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand{ display:flex; gap:16px; align-items:center; }
+  .seal{
+    width:56px;height:56px;border-radius:50%;
+    background:var(--seal); color:#f4ede4;
+    display:flex;align-items:center;justify-content:center;
+    font-family:-apple-system,'Yu Gothic UI','Meiryo',sans-serif; font-weight:900; font-size:13px;
+    letter-spacing:.05em;
+    box-shadow: inset 0 0 0 2px rgba(244,237,228,.35), var(--shadow);
+    flex-shrink:0;
+    writing-mode: vertical-rl;
+  }
+  h1{
+    font-family:-apple-system,'Yu Gothic UI','Meiryo',sans-serif;
+    font-weight:900; font-size:26px; margin:0 0 4px; letter-spacing:.02em;
+  }
+  .sub{ color:var(--ink-soft); font-size:13.5px; }
+  .monitor-banner{ margin:0 0 22px; padding:12px 16px; border:1px solid #e3cf9a; background:#fff8e1; border-radius:10px; font-size:13px; line-height:1.7; color:#4a3a14; }
+  .monitor-banner a{ display:inline-block; margin-left:8px; padding:4px 12px; border-radius:6px; background:#2f4f46; color:#fff; text-decoration:none; font-weight:700; }
+  footer a{ color:inherit; }
+  .privacy-badge{
+    display:flex; align-items:center; gap:8px;
+    font-family:ui-monospace,'Consolas','Menlo',monospace; font-size:11.5px;
+    color:var(--ok); background:#eef4ef; border:1px solid #cfe3d3;
+    padding:8px 12px; border-radius:20px; white-space:nowrap;
+  }
+  .privacy-badge .dot{ width:7px;height:7px;border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px #cfe3d3; }
+
+  /* ---------- Step rail ---------- */
+  .rail{
+    display:flex; counter-reset:step; margin:36px 0 28px; gap:0;
+  }
+  .rail .node{
+    flex:1; position:relative; padding-top:6px; font-size:12.5px; color:var(--ink-soft);
+  }
+  .rail .node::before{
+    counter-increment:step; content:counter(step);
+    display:flex; align-items:center; justify-content:center;
+    width:26px;height:26px;border-radius:50%;
+    background:var(--paper-raised); border:1.5px solid var(--line);
+    font-family:ui-monospace,'Consolas','Menlo',monospace; font-weight:600; font-size:12px;
+    color:var(--ink-soft); margin-bottom:8px;
+  }
+  .rail .node.active::before{ background:var(--pine); border-color:var(--pine); color:#fff; }
+  .rail .node.done::before{ background:var(--ok); border-color:var(--ok); color:#fff; content:"✓"; }
+  .rail .node b{ display:block; color:var(--ink); font-weight:700; font-size:13.5px; margin-bottom:1px;}
+  .rail .node:not(:last-child)::after{
+    content:""; position:absolute; top:19px; left:calc(50% + 20px); right:calc(-50% + 20px);
+    height:1.5px; background:var(--line);
+  }
+  .rail .node.done:not(:last-child)::after{ background:var(--ok); }
+
+  /* ---------- Panels ---------- */
+  .panel{
+    background:var(--paper-raised); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:28px; margin-bottom:20px;
+  }
+  .panel h2{
+    font-size:15px; margin:0 0 4px; font-weight:700; display:flex; align-items:center; gap:8px;
+  }
+  .panel h2 .tag{
+    font-family:ui-monospace,'Consolas','Menlo',monospace; font-size:10.5px; color:var(--brass);
+    border:1px solid var(--brass-soft); padding:2px 6px; border-radius:3px; font-weight:600;
+  }
+  .panel p.help{ color:var(--ink-soft); font-size:13px; margin:6px 0 16px; }
+
+  .dropzone{
+    border:1.5px dashed var(--line); border-radius:var(--radius);
+    padding:36px 20px; text-align:center; cursor:pointer;
+    transition:border-color .15s, background .15s;
+    color:var(--ink-soft); font-size:13.5px;
+  }
+  .dropzone:hover, .dropzone.drag{ border-color:var(--pine); background:#f4f7f6; }
+  .dropzone strong{ color:var(--ink); display:block; font-size:14.5px; margin-bottom:4px; }
+  input[type=file]{ display:none; }
+
+  button{
+    font-family:inherit; cursor:pointer; border-radius:var(--radius);
+    border:1px solid var(--pine); background:var(--pine); color:#fff;
+    padding:10px 18px; font-size:13.5px; font-weight:600; letter-spacing:.01em;
+    transition:opacity .15s, transform .05s;
+  }
+  button:hover{ opacity:.88; }
+  button:active{ transform:translateY(1px); }
+  button.secondary{ background:transparent; color:var(--pine); }
+  button.ghost{ background:transparent; color:var(--ink-soft); border-color:var(--line); }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+
+  select#csvEncoding{
+    font-family:inherit; font-size:13px; padding:9px 10px; border-radius:var(--radius);
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+  }
+
+  .canvas-wrap{ position:relative; border:1px solid var(--line); border-radius:var(--radius); overflow:auto; background:#fafafa; }
+  canvas{ display:block; max-width:100%; }
+  .calib-hint{
+    display:flex; gap:10px; align-items:center; margin:14px 0; font-size:12.5px; color:var(--ink-soft);
+    background:#f8f4ec; border:1px solid #ecdfc6; padding:10px 14px; border-radius:var(--radius);
+  }
+  .col-legend{ display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 4px; align-items:flex-end; }
+  .col-legend .role-hint{ flex-basis:100%; font-size:12px; color:var(--ink-soft); margin-bottom:2px; }
+  .role-cell{ display:flex; flex-direction:column; gap:3px; font-size:11px; color:var(--ink-soft); }
+  .role-cell b{ font-family:ui-monospace,'Consolas','Menlo',monospace; font-weight:600; }
+  .role-cell select{ font-size:12px; padding:5px 6px; border:1px solid var(--line); border-radius:var(--radius); background:#fff; color:var(--ink); }
+  .col-chip{
+    font-size:11.5px; font-family:ui-monospace,'Consolas','Menlo',monospace; padding:4px 10px; border-radius:20px;
+    border:1px solid var(--line); color:var(--ink-soft);
+  }
+  .col-chip.active{ border-color:var(--pine); color:var(--pine); background:#eef3f2; font-weight:700; }
+
+  .page-tabs{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .page-tab{
+    background:transparent; border:1px solid var(--line); color:var(--ink-soft);
+    padding:6px 12px; font-size:12px; border-radius:20px; font-weight:600;
+  }
+  .page-tab.active{ background:var(--pine); border-color:var(--pine); color:#fff; }
+
+  .profile-bar, .image-tools{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:#f8f6f0; border:1px solid var(--line); border-radius:var(--radius);
+    padding:10px 12px; margin-bottom:14px; font-size:12.5px;
+  }
+  .image-tools{ background:#f5f4ef; }
+  .tools-label{ color:var(--ink-soft); font-weight:600; margin-right:2px; }
+  .profile-sep{ width:1px; height:18px; background:var(--line); margin:0 4px; }
+  .profile-bar select, .image-tools select, .csv-encoding-select{
+    font-family:inherit; font-size:12.5px; padding:6px 8px; border-radius:var(--radius);
+    border:1px solid var(--line); background:#fff; color:var(--ink);
+  }
+  .profile-bar button, .image-tools button{ padding:6px 12px; font-size:12.5px; }
+  .chk-label{ display:flex; align-items:center; gap:5px; color:var(--ink-soft); cursor:pointer; }
+  .chk-label input{ cursor:pointer; }
+
+  .actions{ display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+
+  table.result{ width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+
+  .result-layout{ display:flex; gap:20px; align-items:flex-start; }
+  .result-table-col{ flex:1 1 auto; min-width:0; }
+  .result-image-col{
+    flex:0 0 340px; position:sticky; top:16px;
+    border:1px solid var(--line); border-radius:var(--radius); background:var(--paper-raised);
+    box-shadow:var(--shadow); overflow:hidden;
+  }
+  .result-image-col.hidden{ display:none; }
+  .image-preview-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700; color:var(--ink-soft);
+  }
+  .image-preview-header button{ padding:4px 10px; font-size:11.5px; }
+  .image-preview-scroll{ max-height:560px; overflow:auto; background:#fafafa; position:relative; }
+  .image-preview-inner{ position:relative; }
+  .image-preview-inner canvas{ display:block; width:100%; height:auto; }
+  .image-preview-highlight{
+    position:absolute; left:0; right:0;
+    background:rgba(143,59,59,0.16);
+    border-top:2px solid var(--seal); border-bottom:2px solid var(--seal);
+    pointer-events:none;
+  }
+  .image-preview-highlight.cell{
+    border-left:2px solid var(--seal); border-right:2px solid var(--seal);
+    background:rgba(143,59,59,0.22);
+  }
+  .row-tools{ white-space:nowrap; text-align:center; vertical-align:middle; }
+  .row-tools button{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    width:24px; height:24px; padding:0; margin:0 1px; font-size:12px; line-height:1;
+    border-radius:3px; cursor:pointer;
+  }
+  .row-tools button:hover{ border-color:var(--pine); color:var(--pine); background:#f4f7f6; }
+  .row-tools button.del:hover{ border-color:var(--seal); color:var(--seal); background:#faf1f1; }
+  .row-tools button:disabled{ opacity:.3; cursor:default; }
+
+  .undo-toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    display:none; align-items:center; gap:14px; z-index:9999;
+    background:var(--ink); color:#f4ede4;
+    padding:10px 16px; border-radius:6px; font-size:13px;
+    box-shadow:0 6px 24px rgba(28,43,47,.28);
+  }
+  .undo-toast.show{ display:flex; }
+  .undo-toast button{
+    background:transparent; border:1px solid rgba(244,237,228,.45); color:#f4ede4;
+    padding:5px 12px; font-size:12.5px; font-weight:600; border-radius:4px; cursor:pointer;
+  }
+  .undo-toast button:hover{ background:rgba(244,237,228,.14); }
+
+  .paste-panel{
+    display:none; margin-top:12px; padding:12px 14px;
+    background:#f5f4ef; border:1px solid var(--line); border-radius:var(--radius);
+    font-size:12.5px; color:var(--ink-soft);
+  }
+  .paste-panel.show{ display:block; }
+  .paste-panel p{ margin:0 0 8px; line-height:1.6; }
+  .paste-panel b{ color:var(--ink); }
+  .paste-panel textarea{
+    width:100%; box-sizing:border-box; font-family:ui-monospace,'Consolas','Menlo',monospace;
+    font-size:12px; padding:8px; border:1px solid var(--line); border-radius:var(--radius);
+    background:#fff; color:var(--ink); resize:vertical;
+  }
+  .paste-panel-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .paste-panel-actions button{ padding:6px 12px; font-size:12.5px; }
+  .image-preview-empty{
+    padding:30px 16px; text-align:center; color:var(--ink-soft); font-size:12.5px; line-height:1.7;
+  }
+  table.result tbody tr{ cursor:pointer; }
+  table.result tbody tr.row-selected td{ background:#f4ecdb; }
+  @media (max-width: 900px){
+    .result-layout{ flex-direction:column; }
+    .result-image-col{ flex-basis:auto; width:100%; position:static; }
+  }
+  table.result th{
+    text-align:left; font-size:11px; letter-spacing:.03em; color:var(--ink-soft);
+    border-bottom:1.5px solid var(--ink); padding:8px 10px; font-weight:700;
+  }
+  table.result td{ border-bottom:1px solid var(--line); padding:2px; vertical-align:top; }
+  table.result td input{
+    width:100%; border:1px solid transparent; background:transparent; padding:8px 8px;
+    font-family:inherit; font-size:13px; color:var(--ink); border-radius:2px;
+  }
+  table.result td input:focus{ border-color:var(--pine); background:#fff; outline:none; }
+  table.result tr:hover td{ background:#faf8f3; }
+  .col-amount input{ font-family:ui-monospace,'Consolas','Menlo',monospace; text-align:right; }
+
+  /* ---------- 摘要 学習辞書: 候補チップ / 説明バー ---------- */
+  .desc-cell{ position:relative; }
+  .desc-suggest-slot{ display:block; }
+  .desc-suggest{
+    display:inline-block; max-width:100%;
+    margin:0 6px 5px; padding:2px 9px;
+    font-size:11px; font-weight:600; line-height:1.6;
+    background:#eef3f2; color:var(--pine);
+    border:1px solid var(--brass-soft); border-radius:20px;
+    cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:top;
+  }
+  .desc-suggest::before{ content:"✎ "; }
+  .desc-suggest:hover{ background:var(--pine); color:#fff; border-color:var(--pine); }
+  .desc-dict-note{
+    display:none; align-items:center; gap:10px; flex-wrap:wrap;
+    font-size:12px; color:var(--ink-soft);
+    background:#f8f4ec; border:1px solid #ecdfc6; border-radius:var(--radius);
+    padding:8px 12px; margin-bottom:14px;
+  }
+  .desc-dict-note b{ color:var(--ink); }
+  .desc-dict-note button{ padding:4px 10px; font-size:11.5px; }
+
+  /* ---------- 仕訳CSV: 相手勘定科目 列 / 設定バー ---------- */
+  .col-acct{ display:none; }
+  table.result.show-acct .col-acct{ display:table-cell; }
+  .acct-suggest{
+    display:inline-block; max-width:100%;
+    margin:0 6px 5px; padding:2px 9px;
+    font-size:11px; font-weight:600; line-height:1.6;
+    background:#f1eee6; color:var(--brass);
+    border:1px solid var(--brass-soft); border-radius:20px;
+    cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:top;
+  }
+  .acct-suggest::before{ content:"✎ "; }
+  .acct-suggest:hover{ background:var(--brass); color:#fff; border-color:var(--brass); }
+  .journal-settings{
+    display:none; align-items:center; gap:10px 14px; flex-wrap:wrap;
+    background:#f5f4ef; border:1px solid var(--line); border-radius:var(--radius);
+    padding:10px 14px; margin-bottom:14px; font-size:12.5px;
+  }
+  .journal-settings.show{ display:flex; }
+  .journal-settings label{ display:inline-flex; align-items:center; gap:6px; color:var(--ink-soft); }
+  .journal-settings input{
+    font-family:inherit; font-size:12.5px; padding:6px 8px; border-radius:var(--radius);
+    border:1px solid var(--line); background:#fff; color:var(--ink); width:130px;
+  }
+  .journal-settings .js-note{ flex-basis:100%; color:var(--ink-soft); font-size:11.5px; line-height:1.6; }
+
+  /* ---------- 作業状態の保存・復元 ---------- */
+  .session-restore{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    font-size:12.5px; color:var(--ink-soft);
+    background:#eef4ef; border:1px solid #cfe3d3; border-radius:var(--radius);
+    padding:10px 14px; margin-bottom:16px;
+  }
+  .session-restore b{ color:var(--ink); }
+  .session-restore button{ padding:6px 12px; font-size:12.5px; }
+  .session-images-label{ display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--ink-soft); cursor:pointer; }
+  .session-images-label input{ cursor:pointer; }
+  .post-csv-notice{
+    display:none; align-items:center; gap:12px; flex-wrap:wrap;
+    font-size:12.5px; color:var(--ink-soft);
+    background:#f8f4ec; border:1px solid #ecdfc6; border-radius:var(--radius);
+    padding:10px 14px; margin-top:12px;
+  }
+  .post-csv-notice button{ padding:6px 12px; font-size:12.5px; }
+
+  .row-flag{ width:6px; }
+  .row-flag.low{ background:var(--warn); }
+  .row-flag.mismatch{ background:var(--seal); }
+  #resultBody tr[data-flag]{ cursor:help; }
+
+  .status{ font-size:12.5px; color:var(--ink-soft); margin-top:10px; font-family:ui-monospace,'Consolas','Menlo',monospace; }
+  .progress{ height:4px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:10px; display:none; }
+  .progress.show{ display:block; }
+  .progress > div{ height:100%; width:0%; background:var(--pine); transition:width .2s; }
+
+  footer{ margin-top:40px; padding-top:20px; border-top:1px solid var(--line); font-size:12px; color:var(--ink-soft); }
+</style>
+</head>
+<body>
+<div id="fileProtocolWarning" style="display:none; background:#8f3b3b; color:#fff; padding:12px 20px; font-size:13.5px; text-align:center; font-weight:600;">
+  ⚠ このページは file:// から直接開かれています。OCR実行時にエラーになるため、フォルダ内の <strong>start.bat</strong> をダブルクリックして開き直してください。
+</div>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="seal">通帳台帳</div>
+      <div>
+        <h1>通帳OCR転記ツール</h1>
+        <div class="sub">v1.0.0 ｜ Webお試し版（表示・書き出しは先頭10行まで）</div>
+      </div>
+    </div>
+    <div class="privacy-badge"><span class="dot"></span>画像・読み取り結果は端末外へ送信されません</div>
+  </header>
+  <div class="monitor-banner">
+    <strong>無料モニター募集中</strong>　会計事務所・経理のご担当者さまに、全行を変換できる製品版（ネット未接続のパソコンでも使えるZIP版）を無料でお渡ししています。使ってみたご感想をお聞かせください。
+    <a href="mailto:arima.dev.lab@outlook.jp?subject=%E9%80%9A%E5%B8%B3OCR%20%E7%84%A1%E6%96%99%E3%83%A2%E3%83%8B%E3%82%BF%E3%83%BC%E7%94%B3%E3%81%97%E8%BE%BC%E3%81%BF&amp;body=%E4%BA%8B%E5%8B%99%E6%89%80%E5%90%8D%EF%BC%9A%0A%E3%81%8A%E5%90%8D%E5%89%8D%EF%BC%9A%0A%E3%81%8A%E4%BD%BF%E3%81%84%E3%81%AE%E4%BC%9A%E8%A8%88%E3%82%BD%E3%83%95%E3%83%88%EF%BC%9A%0A">メールで申し込む</a>
+  </div>
+
+  <div class="rail">
+    <div class="node active" id="railStep1"><b>画像を読み込む</b>通帳のスキャン/写真</div>
+    <div class="node" id="railStep2"><b>列位置を指定</b>1回だけ設定（銀行ごと）</div>
+    <div class="node" id="railStep3"><b>OCR実行</b>ローカルで解析</div>
+    <div class="node" id="railStep4"><b>確認・CSV出力</b>修正して保存</div>
+  </div>
+
+  <!-- STEP 1: upload -->
+  <div class="panel" id="panelUpload">
+    <h2>STEP 1 <span class="tag">画像読み込み</span></h2>
+
+    <div class="session-restore" id="sessionRestoreBar" style="display:none;">
+      <span id="sessionRestoreInfo"></span>
+      <button id="btnRestoreSession" type="button">前回の作業を復元</button>
+      <button class="ghost" id="btnDiscardSession" type="button">破棄</button>
+    </div>
+
+    <p class="help">通帳のスキャン画像・スマホ撮影画像（PNG/JPG）、またはPDFを読み込みます。複数ファイル・複数ページも一括で読み込めます（列位置は1枚目の画像を基準に1回だけ設定します）。</p>
+    <div class="dropzone" id="dropzone">
+      <strong>ここに画像/PDFをドラッグ＆ドロップ</strong>
+      またはクリックしてファイルを選択（複数選択可）
+      <input type="file" id="fileInput" accept="image/*,application/pdf" multiple>
+    </div>
+    <div class="actions">
+      <button class="secondary" id="btnSample">サンプル通帳画像で試す</button>
+      <button class="ghost" id="btnLoadSession" type="button">保存した作業ファイル(JSON)から再開</button>
+      <input type="file" id="sessionFileInput" accept="application/json,.json" style="display:none;">
+    </div>
+  </div>
+
+  <!-- STEP 2: calibration -->
+  <div class="panel" id="panelCalib" style="display:none;">
+    <h2>STEP 2 <span class="tag">列位置キャリブレーション</span></h2>
+    <p class="help">画像上で「列の区切り位置」をクリックして線を引いてください（通帳の列数 − 1 本）。線はドラッグで微調整、<strong>ダブルクリックで削除</strong>できます。線を引いたら、下のプルダウンで<strong>各列が何の項目か</strong>を指定します。銀行によって並び順が違う場合（預り／支払が逆、取扱店コード列がある等）も、ここで割り当てを合わせれば対応できます。使わない列は「― 使わない ―」を選んでください。<br><strong>通帳の左端に行番号（01・02・03…）が印字されている場合</strong>は、行番号と年月日のあいだにも区切り線を引き、行番号の列を「― 使わない ―」にしてください（線の位置が多少ずれても、日付欄の読み取り側で行番号は自動的に切り離します）。<strong id="calibPageInfo"></strong></p>
+
+    <div class="profile-bar">
+      <select id="profileSelect"><option value="">－ 保存済みプロファイル ―</option></select>
+      <button class="ghost" id="btnLoadProfile">呼び出す</button>
+      <button class="secondary" id="btnSaveProfile">現在の位置を保存</button>
+      <span class="profile-sep"></span>
+      <button class="ghost" id="btnExportProfiles">エクスポート</button>
+      <button class="ghost" id="btnImportProfiles">インポート</button>
+      <input type="file" id="importProfileInput" accept="application/json" style="display:none;">
+    </div>
+
+    <div class="image-tools">
+      <span class="tools-label">画像補正:</span>
+      <button class="ghost" id="btnRotateLeft" title="反時計回りに90度回転">↺ 90°</button>
+      <button class="ghost" id="btnRotateRight" title="時計回りに90度回転">↻ 90°</button>
+      <button class="ghost" id="btnRotate180" title="180度回転">180°</button>
+      <label class="chk-label"><input type="checkbox" id="chkContrast"> コントラスト強調</label>
+    </div>
+
+    <div class="canvas-wrap"><canvas id="calibCanvas"></canvas></div>
+    <div class="calib-hint">境界線: <span id="boundaryList" style="font-family:ui-monospace,'Consolas','Menlo',monospace;">未設定</span>　（線をドラッグで調整／ダブルクリックで削除）</div>
+    <div class="col-legend" id="colLegend"></div>
+    <label class="chk-label" style="display:block; margin:10px 0;">
+      <input type="checkbox" id="chkNumericPass" checked>
+      金額欄を数字限定でもう一度OCRする（推奨・精度アップ／処理時間1.5〜2倍）
+    </label>
+    <div class="actions">
+      <button class="ghost" id="btnResetCalib">クリアしてやり直す</button>
+      <button id="btnRunOcr" disabled>この列位置でOCR実行 →</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: processing -->
+  <div class="panel" id="panelProcessing" style="display:none;">
+    <h2>STEP 3 <span class="tag">OCR実行中</span></h2>
+    <p class="status" id="ocrStatus">初期化中...</p>
+    <div class="progress" id="ocrProgress"><div></div></div>
+  </div>
+
+  <!-- STEP 4: result -->
+  <div class="panel" id="panelResult" style="display:none;">
+    <h2>STEP 4 <span class="tag">結果確認・修正</span></h2>
+    <p class="help">OCR結果です。誤認識箇所はクリックして直接修正できます。<strong>セルをクリックすると、右の元画像で該当セル（列×行）だけがハイライトされます</strong>（行の余白をクリックすると行全体）。右端の「行操作」で行の上下移動・挿入・削除ができます（OCRが行を誤結合・誤分割したときの修正に）。<strong>Excelでコピーした複数セルは、貼り付けたいセルに直接 Ctrl+V でまとめて流し込めます</strong>（「Excelから貼り付け」ボタンからも一括置換・追加が可能）。左端のマークは要確認行です（黄=OCR自信度が低い／赤=前後の残高と計算が合わない）。複数ページの場合はタブで切り替えられます。CSVは全ページ分をまとめて1ファイルに出力します。<strong>手修正した摘要は選択中のプロファイルに記憶され、次回以降おなじ通帳では似た行に候補ボタン（✎）が表示されます。</strong>「CSVをダウンロード」の左のプルダウンで、弥生会計・freee・マネーフォワードクラウド向けの<strong>仕訳インポート用CSV</strong>としても出力できます（相手勘定科目は「勘定科目(相手)」列で指定）。</p>
+    <div class="page-tabs" id="pageTabs" style="display:none;"></div>
+    <div class="desc-dict-note" id="descDictNote"></div>
+    <datalist id="descVocabList"></datalist>
+    <datalist id="acctVocabList"></datalist>
+
+    <div class="journal-settings" id="journalSettings">
+      <label>口座の勘定科目 <input type="text" id="jsAccountName" placeholder="普通預金"></label>
+      <label>補助科目 <input type="text" id="jsSubAccount" placeholder="（銀行名など・任意）"></label>
+      <label>相手科目の既定 <input type="text" id="jsDefaultCounter" placeholder="（未入力の行に使う）"></label>
+      <label>税区分の既定 <input type="text" id="jsDefaultTax" placeholder="対象外"></label>
+      <span class="js-note"><b style="color:var(--warn);">⚠ 税区分は全行に同じ値（上の既定値）が入ります。</b>同じ通帳内でも取引ごとに本来の税区分は異なり得ます（例: 家賃と振込手数料）。<b>インポート後、必ず会計ソフト側で各行の税区分をご確認ください。</b>本ツールは取引内容から科目・税区分を判定しません。</span>
+      <span class="js-note">相手勘定科目は「勘定科目(相手)」列に入力してください。入力した科目はこのプロファイルの摘要に紐づけて記憶され、次回以降おなじ摘要に候補（✎）が出ます（科目を選ぶ判断は常に利用者が行い、ツールは記憶するだけです）。日付は西暦 YYYY/MM/DD に変換して出力します（和暦は令和／平成を年から自動判定。判定が不確実な場合があるため要確認）。</span>
+    </div>
+
+    <div class="result-layout">
+      <div class="result-table-col">
+        <table class="result" id="resultTable">
+      <thead>
+        <tr>
+          <th style="width:6px;"></th>
+          <th style="width:90px;">日付</th>
+          <th>摘要</th>
+          <th style="width:100px;">支払金額</th>
+          <th style="width:100px;">預り金額</th>
+          <th style="width:110px;">差引残高</th>
+          <th class="col-acct" style="width:120px;">勘定科目(相手)</th>
+          <th style="width:108px;">行操作</th>
+        </tr>
+      </thead>
+      <tbody id="resultBody"></tbody>
+        </table>
+        <div class="actions">
+          <button class="ghost" id="btnAddRow">＋ 行を追加</button>
+          <button class="ghost" id="btnRecheck">整合性を再チェック</button>
+          <button class="ghost" id="btnPasteOpen" title="Excelでコピーした表（タブ区切り）をまとめて貼り込みます">Excelから貼り付け</button>
+          <button class="ghost" id="btnCopyTsv" title="全行をタブ区切りでクリップボードにコピーします（Excelに貼り付け可）">Excel用にコピー</button>
+          <button class="ghost" id="btnSaveSession" title="OCR結果と修正内容をJSONファイルに書き出します">作業を保存(JSON)</button>
+          <label class="session-images-label" title="チェックすると元画像も保存します。照合用に便利ですが、数十ページではファイルが数十MB以上になります">
+            <input type="checkbox" id="chkSessionImages"> 画像も含める
+          </label>
+          <button class="secondary" id="btnBackToUpload">別の画像を読み込む</button>
+          <select id="csvFormat" title="出力するCSVの形式">
+            <option value="raw">通帳転記（日付・摘要・金額）</option>
+            <option value="yayoi">弥生会計 インポート形式（仕訳）</option>
+            <option value="freee">freee 仕訳（振替形式）</option>
+            <option value="mfc">マネーフォワード クラウド 仕訳帳</option>
+            <option value="generic">汎用 仕訳（借方/貸方）</option>
+          </select>
+          <select id="csvEncoding" title="出力するCSVの文字コード">
+            <option value="utf8">UTF-8 (Excel/freee等)</option>
+            <option value="sjis">Shift-JIS (弥生など古い会計ソフト向け)</option>
+          </select>
+          <button id="btnDownloadCsv">CSVをダウンロード</button>
+        </div>
+        <div class="paste-panel" id="pastePanel">
+          <p><b>Excelから貼り付け</b>：<b>日付 / 摘要 / 支払金額 / 預り金額 / 差引残高 / 勘定科目(相手)</b> の列順でコピーした範囲を、下の枠に貼り付けてください（タブ区切り。5列でも可）。<br>※ 表のセルに直接 Ctrl+V しても、その位置を起点に複数セルをまとめて貼り込めます（この枠は不要です）。</p>
+          <textarea id="pasteArea" rows="6" placeholder="ここに Ctrl+V で貼り付け"></textarea>
+          <label class="chk-label"><input type="checkbox" id="pasteHasHeader"> 先頭行は見出し行（取り込まない）</label>
+          <div class="paste-panel-actions">
+            <button id="btnPasteReplace">全行を置き換え</button>
+            <button class="ghost" id="btnPasteAppend">末尾に追加</button>
+            <button class="ghost" id="btnPasteCancel">閉じる</button>
+          </div>
+        </div>
+        <p class="help" style="margin:10px 0 0;">作業内容はこの端末に自動保存され、ブラウザを閉じても次回起動時に「前回の作業を復元」から続けられます。別の端末へ移す・バックアップするには「作業を保存(JSON)」でファイルに書き出してください。<span id="autoSaveStatus" style="color:var(--ok);"></span></p>
+        <div class="post-csv-notice" id="postCsvNotice">
+          <span id="postCsvNoticeText">CSVを出力しました。この端末に自動保存されている作業データ（通帳の内容）は、次にこの画面を開いたとき復元候補として残ります。共有パソコンをお使いの場合などは、ここで消去できます。</span>
+          <button type="button" id="btnClearSessionAfterCsv">作業データを消去</button>
+          <button type="button" class="ghost" id="btnKeepSessionAfterCsv">残す</button>
+        </div>
+      </div>
+
+      <div class="result-image-col">
+        <div class="image-preview-header">
+          <span>元画像プレビュー</span>
+          <button class="ghost" id="btnToggleImagePreview" type="button">隠す</button>
+        </div>
+        <div class="image-preview-scroll" id="imagePreviewScroll">
+          <div class="image-preview-inner" id="imagePreviewInner">
+            <canvas id="previewCanvas"></canvas>
+            <div class="image-preview-highlight" id="previewHighlight" style="display:none;"></div>
+          </div>
+          <div class="image-preview-empty" id="imagePreviewEmpty">行をクリックすると、ここに該当箇所が表示されます</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Webお試し版：OCRエンジン（WebAssembly）はこのサイトから読み込み、画像の読み取りはこの端末のブラウザの中だけで行います。通帳画像やOCR結果を外部へ送信することはありません（このページは、ブラウザの設定〔Content-Security-Policy〕でこのサイト以外への通信を禁止しています）。プロファイル・学習辞書（摘要／相手勘定科目）・仕訳の設定・作業状態の自動保存は、この端末のブラウザ内(localStorage)にのみ保存されます。<br>
+    ネットにつながないパソコンで使える製品版（ZIP）は、無料モニターの方にお渡ししています。
+    ｜ <a href="manual.pdf" target="_blank" rel="noopener">マニュアル</a> ｜ <a href="terms_of_use.pdf" target="_blank" rel="noopener">利用規約</a> ｜ <a href="DISCLAIMER.txt" target="_blank" rel="noopener">免責事項</a> ｜ <a href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">ライセンス</a> ｜ <a href="https://arima-dev-lab.vercel.app/" target="_blank" rel="noopener">Arima Dev Lab</a>
+  </footer>
+</div>
+
+<div class="undo-toast" id="undoToast">
+  <span id="undoToastMsg"></span>
+  <button type="button" id="btnUndoDelete">元に戻す</button>
+</div>
+
+<script src="./lib/tesseract.min.js"></script>
+<script src="./lib/pdf.min.js"></script>
+<script src="./lib/encoding.min.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  const COLS = ["日付","摘要","支払金額","預り金額","差引残高"];
+  // 列の役割（銀行ごとに並び・構成が異なる通帳に対応するため、境界線を引いた後に
+  // 各バンドへ役割を割り当てる）。'ignore' は取扱店コード列などの無視対象。
+  const ROLE_OPTS = [
+    { v:'date',       label:'日付' },
+    { v:'desc',       label:'摘要' },
+    { v:'withdrawal', label:'支払金額（出金）' },
+    { v:'deposit',    label:'預り金額（入金）' },
+    { v:'balance',    label:'差引残高' },
+    { v:'ignore',     label:'― 使わない ―' }
+  ];
+  const ROLE_SHORT = { date:'日付', desc:'摘要', withdrawal:'支払', deposit:'預り', balance:'残高', ignore:'（無視）' };
+  const STD_ROLES = ['date','desc','withdrawal','deposit','balance'];
+  const MAX_BOUNDARIES = 9;
+
+  // ==== 体験版（トライアル）設定 =========================================
+  // 製品版をビルドするときは IS_TRIAL を false にするだけでよい。false にすると
+  // 行数制限も案内行も一切無くなり、全行が表・CSV/Excel に反映される通常版になる。
+  //  ・OCR処理そのものは体験版でも全行実行する（pages[].rows は常に全行を保持）。
+  //  ・体験版では「表示・CSV/Excel出力」の直前で先頭 TRIAL_ROW_LIMIT 行に絞る。
+  const IS_TRIAL = true;
+  const TRIAL_ROW_LIMIT = 10;
+  // 表示用/1ページ分の行を制限する（配列はコピーを返す。全行は呼び出し側が保持し続ける）
+  function limitRowsForOutput(rows){
+    if(!Array.isArray(rows)) return [];
+    return (IS_TRIAL && rows.length > TRIAL_ROW_LIMIT) ? rows.slice(0, TRIAL_ROW_LIMIT) : rows.slice();
+  }
+  // 全ページを連結した行を、体験版では先頭 TRIAL_ROW_LIMIT 行だけにして返す（CSV/仕訳/コピー用）
+  function collectOutputRows(){
+    const all = [];
+    pages.forEach(p => (p.rows || []).forEach(r => all.push(r)));
+    return (IS_TRIAL && all.length > TRIAL_ROW_LIMIT) ? all.slice(0, TRIAL_ROW_LIMIT) : all;
+  }
+  function trialTailHidden(fullRows){
+    return IS_TRIAL && Array.isArray(fullRows) && fullRows.length > TRIAL_ROW_LIMIT;
+  }
+  // =====================================================================
+  // 先頭の符号（半角 -、全角 −/－、通帳でよく使われる ▲ △ ▽ ▼）を任意で許容し、
+  // 当座貸越などのマイナス残高を取りこぼさないようにする。符号と数字の間の空白も許す。
+  const AMOUNT_SIGN_RE = /[-−－▲△▽▼]/;
+  const AMOUNT_RE = /[-−－▲△▽▼]?\s*[0-9][0-9,\.]{2,}/;
+
+  let img = new Image();
+  let naturalW = 0, naturalH = 0; // キャリブレーション基準（常に1枚目のページ）
+  let boundaries = []; // x-coordinates（基準ページの画像座標系）
+  let colRoles = [];   // 各バンドの役割（長さ = boundaries.length + 1）
+  let rolesUserSet = false; // ユーザーが割り当てを手で変えたら true（自動再生成を止める）
+  let canvas = document.getElementById('calibCanvas');
+  let ctx = canvas.getContext('2d');
+  let scale = 1;
+
+  // 複数ページ/PDF対応: pages[i] = { name, dataUrl, rows(OCR結果, ページ切替のたびに同期), status }
+  let pages = [];
+  let activePageIndex = 0;
+
+  // file://で直接開かれている場合は警告バナーを表示する
+  // （Workerがfile://のスクリプトを読み込めず、OCR実行時にエラーになるため）
+  if(location.protocol === 'file:'){
+    const w = document.getElementById('fileProtocolWarning');
+    if(w) w.style.display = 'block';
+  }
+
+  if(window.pdfjsLib){
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.js';
+  }
+
+  const el = id => document.getElementById(id);
+  const railNode = n => el('railStep'+n);
+
+  // ---------------- プロファイル管理（localStorage） ----------------
+  const PROFILE_KEY = 'passbook_ocr_profiles_v1';
+
+  function loadProfiles(){
+    try{
+      const raw = localStorage.getItem(PROFILE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    }catch(e){ return {}; }
+  }
+  function saveProfilesToStorage(profiles){
+    try{ localStorage.setItem(PROFILE_KEY, JSON.stringify(profiles)); }
+    catch(e){ alert('プロファイルの保存に失敗しました: ' + e.message); }
+  }
+  function refreshProfileSelect(){
+    const profiles = loadProfiles();
+    const sel = el('profileSelect');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">－ 保存済みプロファイル ―</option>';
+    Object.keys(profiles).sort().forEach(name=>{
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    if(profiles[current]) sel.value = current;
+  }
+
+  // ---------------- 摘要 学習辞書（プロファイル＝銀行×顧問先 ごと・localStorage） ----------------
+  // ユーザーが一度手修正した摘要を記憶し、次回以降、似たOCR結果に修正候補（✎チップ）を出す。
+  // 「毎月おなじ通帳を処理するほど修正が減っていく」体験を狙う機能。
+  const DESC_DICT_KEY = 'passbook_ocr_desc_dict_v1';
+  const DESC_SUGGEST_THRESHOLD = 0.58; // 文字bigramのDice係数がこれ以上なら「同じ摘要の言い直し」とみなす
+  const DESC_DICT_MAX_ENTRIES = 600;   // 1プロファイルあたりの記憶上限（超過分は低頻度＆古い順に削除）
+  const DESC_VALUE_MAX_LEN = 120;      // 記憶する摘要文字列の長さ上限（貼り付けゴミ対策）
+  const DESC_DEFAULT_PROFILE = '（プロファイル未選択）';
+
+  // OCR実行時に選ばれていたプロファイル名。STEP4での学習・候補表示のバケットキーになる。
+  let activeProfileKey = DESC_DEFAULT_PROFILE;
+
+  function loadDescDict(){
+    try{
+      const raw = localStorage.getItem(DESC_DICT_KEY);
+      return raw ? JSON.parse(raw) : {};
+    }catch(e){ return {}; }
+  }
+  function saveDescDict(dict){
+    // 保存失敗（容量超過など）は機能の本質ではないので黙って続行する
+    try{ localStorage.setItem(DESC_DICT_KEY, JSON.stringify(dict)); }catch(e){}
+  }
+  function getProfileBucket(dict, key){
+    if(!dict[key]) dict[key] = { entries: {} };
+    if(!dict[key].entries) dict[key].entries = {};
+    return dict[key];
+  }
+
+  function escapeHtml(s){
+    return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  // 照合キー用の正規化: 全角→半角・記号ゆれ吸収・空白除去・小文字化
+  function normDesc(s){
+    if(!s) return '';
+    let t = String(s);
+    try{ t = t.normalize('NFKC'); }catch(e){}
+    return t.replace(/[\s　]+/g,'')
+            .replace(/[.,、。・･｡､]/g,'')
+            .toLowerCase()
+            .trim();
+  }
+  function descBigrams(s){
+    const g = [];
+    for(let i=0;i<s.length-1;i++) g.push(s.slice(i,i+2));
+    return g;
+  }
+  // 文字bigramのDice係数(0〜1)。軽量で「数文字違い」の日本語摘要に強い。
+  function descSimilarity(a, b){
+    if(a === b) return a ? 1 : 0;
+    if(a.length < 2 || b.length < 2) return 0;
+    const A = descBigrams(a), B = descBigrams(b);
+    const counts = new Map();
+    A.forEach(x => counts.set(x, (counts.get(x)||0) + 1));
+    let inter = 0;
+    B.forEach(x => {
+      const c = counts.get(x) || 0;
+      if(c > 0){ inter++; counts.set(x, c - 1); }
+    });
+    return (2 * inter) / (A.length + B.length);
+  }
+
+  // OCRで得た摘要に対する修正候補を返す（無ければ null）
+  function suggestDesc(ocrText){
+    const key = normDesc(ocrText);
+    if(key.length < 2) return null;
+    const bucket = loadDescDict()[activeProfileKey];
+    if(!bucket || !bucket.entries) return null;
+    const entries = bucket.entries;
+
+    // 1) 完全一致（正規化ベース）は最優先
+    if(entries[key] && entries[key].value && normDesc(entries[key].value) !== key){
+      return { value: entries[key].value, score: 1, exact: true };
+    }
+    // 2) あいまい一致: 記憶キー・記憶した確定値の両方と照合し、最も近いものを採用
+    let best = null, bestScore = DESC_SUGGEST_THRESHOLD;
+    Object.keys(entries).forEach(ek => {
+      const e = entries[ek];
+      if(!e || !e.value) return;
+      const s = Math.max(descSimilarity(key, ek), descSimilarity(key, normDesc(e.value)));
+      if(s > bestScore){ bestScore = s; best = e.value; }
+    });
+    if(best && normDesc(best) !== key) return { value: best, score: bestScore, exact: false };
+    return null;
+  }
+
+  // 手修正を学習する。ocrText: 元のOCR結果 / finalText: ユーザーが確定した摘要
+  function learnDesc(ocrText, finalText){
+    const finalTrim = (finalText || '').trim();
+    if(finalTrim.length < 2 || finalTrim.length > DESC_VALUE_MAX_LEN) return;
+    const key = normDesc(ocrText);
+    // OCR結果が空/短すぎる場合は、確定値そのものをキーにして語彙(datalist)として残す
+    const useKey = key.length >= 2 ? key : normDesc(finalTrim);
+    if(useKey.length < 2) return;
+    // 空白・記号ゆれを直しただけの修正はノイズになるので記録しない
+    if(key.length >= 2 && normDesc(finalTrim) === key) return;
+
+    const dict = loadDescDict();
+    const bucket = getProfileBucket(dict, activeProfileKey);
+    const prev = bucket.entries[useKey];
+    bucket.entries[useKey] = {
+      value: finalTrim,
+      count: (prev && prev.value === finalTrim ? (prev.count||1) + 1 : 1),
+      updatedAt: new Date().toISOString()
+    };
+    pruneDescBucket(bucket);
+    saveDescDict(dict);
+  }
+
+  function pruneDescBucket(bucket){
+    const keys = Object.keys(bucket.entries);
+    if(keys.length <= DESC_DICT_MAX_ENTRIES) return;
+    keys.sort((a,b)=>{
+      const ea = bucket.entries[a], eb = bucket.entries[b];
+      return (ea.count||1) - (eb.count||1)
+        || String(ea.updatedAt||'').localeCompare(String(eb.updatedAt||''));
+    });
+    keys.slice(0, keys.length - DESC_DICT_MAX_ENTRIES).forEach(k => delete bucket.entries[k]);
+  }
+
+  // 現在のプロファイルの「確定済み摘要」一覧（datalist補完用・頻度降順）
+  function getDescVocab(){
+    const bucket = loadDescDict()[activeProfileKey];
+    if(!bucket || !bucket.entries) return [];
+    const seen = new Set(), out = [];
+    Object.keys(bucket.entries).forEach(k=>{
+      const e = bucket.entries[k];
+      if(e && e.value && !seen.has(e.value)){ seen.add(e.value); out.push({ value: e.value, count: e.count||1 }); }
+    });
+    out.sort((a,b)=> b.count - a.count);
+    return out;
+  }
+  function refreshDescVocabList(){
+    const dl = el('descVocabList');
+    if(!dl) return;
+    dl.innerHTML = '';
+    getDescVocab().slice(0, 300).forEach(v=>{
+      const opt = document.createElement('option');
+      opt.value = v.value;
+      dl.appendChild(opt);
+    });
+  }
+  function descDictEntryCount(){
+    const bucket = loadDescDict()[activeProfileKey];
+    return bucket && bucket.entries ? Object.keys(bucket.entries).length : 0;
+  }
+  function updateDescDictNote(){
+    const note = el('descDictNote');
+    if(!note) return;
+    const n = descDictEntryCount();
+    note.style.display = 'flex';
+    const acctBucket = loadAcctDict()[activeProfileKey];
+    const acctN = acctBucket && acctBucket.entries ? Object.keys(acctBucket.entries).length : 0;
+    note.innerHTML =
+      '<span>学習辞書: <b>' + escapeHtml(activeProfileKey) + '</b>（摘要 ' + n + ' 件'
+      + (currentCsvFormat() !== 'raw' ? ' ／ 相手勘定科目 ' + acctN + ' 件' : '') + '）'
+      + '／手修正・選択した内容は自動で記憶し、次回以降 似たOCR結果に候補（✎）を表示します。'
+      + (activeProfileKey === DESC_DEFAULT_PROFILE ? ' <b>プロファイルを選んでからOCRすると顧問先ごとに辞書が分かれます。</b>' : '')
+      + '</span>';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'ghost'; btn.textContent = 'この辞書をクリア';
+    btn.disabled = n === 0 && acctN === 0;
+    btn.addEventListener('click', ()=>{
+      if(!confirm('「' + activeProfileKey + '」の学習辞書（摘要 ' + n + ' 件・相手勘定科目 ' + acctN + ' 件）を削除します。よろしいですか？')) return;
+      const d = loadDescDict(); delete d[activeProfileKey]; saveDescDict(d);
+      const a = loadAcctDict(); delete a[activeProfileKey]; saveAcctDict(a);
+      refreshDescVocabList();
+      refreshAcctVocabList();
+      renderActivePage();
+    });
+    note.appendChild(btn);
+  }
+
+  // ---------------- 相手勘定科目の学習辞書（摘要の学習辞書と全く同じ仕組み・プロファイル単位） ----------------
+  // キーワードによる自動判定は行わない。科目を選ぶ判断は常に利用者が行い、ツールは
+  // 「この摘要にはこの科目を選んだ」という事実を記憶して次回以降 候補（✎）に出すだけ。
+  const ACCT_DICT_KEY = 'passbook_ocr_acct_dict_v1';
+  function loadAcctDict(){
+    try{ const raw = localStorage.getItem(ACCT_DICT_KEY); return raw ? JSON.parse(raw) : {}; }
+    catch(e){ return {}; }
+  }
+  function saveAcctDict(dict){
+    try{ localStorage.setItem(ACCT_DICT_KEY, JSON.stringify(dict)); }catch(e){}
+  }
+  // OCRで得た摘要に対する相手勘定科目の候補を返す（無ければ null）
+  function suggestAcct(ocrText){
+    const key = normDesc(ocrText);
+    if(key.length < 2) return null;
+    const bucket = loadAcctDict()[activeProfileKey];
+    if(!bucket || !bucket.entries) return null;
+    const entries = bucket.entries;
+    if(entries[key] && entries[key].value){
+      return { value: entries[key].value, score: 1, exact: true };
+    }
+    let best = null, bestScore = DESC_SUGGEST_THRESHOLD;
+    Object.keys(entries).forEach(ek => {
+      const e = entries[ek];
+      if(!e || !e.value) return;
+      const s = descSimilarity(key, ek);
+      if(s > bestScore){ bestScore = s; best = e.value; }
+    });
+    if(best) return { value: best, score: bestScore, exact: false };
+    return null;
+  }
+  // 「この摘要にこの科目を選んだ」を記憶する
+  function learnAcct(ocrText, account){
+    const acc = (account || '').trim();
+    if(acc.length < 1 || acc.length > 60) return;
+    const key = normDesc(ocrText);
+    if(key.length < 2) return;
+    const dict = loadAcctDict();
+    const bucket = getProfileBucket(dict, activeProfileKey);
+    const prev = bucket.entries[key];
+    bucket.entries[key] = {
+      value: acc,
+      count: (prev && prev.value === acc ? (prev.count||1) + 1 : 1),
+      updatedAt: new Date().toISOString()
+    };
+    pruneDescBucket(bucket);
+    saveAcctDict(dict);
+  }
+  function getAcctVocab(){
+    const bucket = loadAcctDict()[activeProfileKey];
+    if(!bucket || !bucket.entries) return [];
+    const seen = new Set(), out = [];
+    Object.keys(bucket.entries).forEach(k=>{
+      const e = bucket.entries[k];
+      if(e && e.value && !seen.has(e.value)){ seen.add(e.value); out.push({ value: e.value, count: e.count||1 }); }
+    });
+    out.sort((a,b)=> b.count - a.count);
+    return out;
+  }
+  function refreshAcctVocabList(){
+    const dl = el('acctVocabList');
+    if(!dl) return;
+    dl.innerHTML = '';
+    getAcctVocab().slice(0, 300).forEach(v=>{
+      const opt = document.createElement('option');
+      opt.value = v.value;
+      dl.appendChild(opt);
+    });
+  }
+
+  // ---------------- 会計ソフト別 仕訳CSV 形式・設定 ----------------
+  const CSV_FORMAT_KEY = 'passbook_ocr_csv_format_v1';        // 選択中の出力形式（端末共通の好み）
+  const JOURNAL_SETTINGS_KEY = 'passbook_ocr_journal_settings_v1'; // 口座科目など・プロファイル単位
+
+  function currentCsvFormat(){
+    return (el('csvFormat') && el('csvFormat').value) || 'raw';
+  }
+  function loadJournalSettings(){
+    try{ const raw = localStorage.getItem(JOURNAL_SETTINGS_KEY); return raw ? JSON.parse(raw) : {}; }
+    catch(e){ return {}; }
+  }
+  function readJournalSettingsFromUI(){
+    return {
+      accountName: (el('jsAccountName') && el('jsAccountName').value.trim()) || '',
+      subAccount: (el('jsSubAccount') && el('jsSubAccount').value.trim()) || '',
+      defaultCounter: (el('jsDefaultCounter') && el('jsDefaultCounter').value.trim()) || '',
+      defaultTax: (el('jsDefaultTax') && el('jsDefaultTax').value.trim()) || ''
+    };
+  }
+  function saveJournalSettings(){
+    const all = loadJournalSettings();
+    all[activeProfileKey] = readJournalSettingsFromUI();
+    try{ localStorage.setItem(JOURNAL_SETTINGS_KEY, JSON.stringify(all)); }catch(e){}
+  }
+  function applyJournalSettingsToUI(){
+    const s = loadJournalSettings()[activeProfileKey] || {};
+    if(el('jsAccountName')) el('jsAccountName').value = s.accountName || '';
+    if(el('jsSubAccount')) el('jsSubAccount').value = s.subAccount || '';
+    if(el('jsDefaultCounter')) el('jsDefaultCounter').value = s.defaultCounter || '';
+    if(el('jsDefaultTax')) el('jsDefaultTax').value = s.defaultTax || '';
+  }
+  // 出力形式に応じて、相手科目列・設定バー・既定文字コードを切り替える
+  function applyCsvFormatUI(){
+    const fmt = currentCsvFormat();
+    const isJournal = fmt !== 'raw';
+    const table = el('resultTable');
+    if(table) table.classList.toggle('show-acct', isJournal);
+    const js = el('journalSettings');
+    if(js) js.classList.toggle('show', isJournal);
+    const enc = el('csvEncoding');
+    if(enc){
+      // 弥生は Shift-JIS、freee/MF/汎用は UTF-8 を既定に（ユーザーは変更可）
+      if(fmt === 'yayoi') enc.value = 'sjis';
+      else if(fmt !== 'raw') enc.value = 'utf8';
+    }
+    try{ localStorage.setItem(CSV_FORMAT_KEY, fmt); }catch(e){}
+  }
+
+  // 通帳日付を会計ソフト向けの西暦 YYYY/MM/DD に正規化する。
+  // 「6.03.01」→令和6→2024/03/01、「31.3.15」→平成31→2019/03/15、「R6.3.1」「令和6年3月1日」対応。
+  // 判定できない場合は元の文字列をそのまま返す（利用者が気付いて直せるように）。
+  function toJournalDate(raw){
+    if(!raw) return '';
+    let t = String(raw).normalize('NFKC').replace(/\s+/g,'').trim();
+    t = t.replace(/[年月]/g,'/').replace(/日/g,'').replace(/[.\-]/g,'/');
+    const m0 = t.match(/^(令和|reiwa|r|平成|heisei|h)?\/?(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/i);
+    if(!m0) return String(raw);
+    let [, prefix, y, mo, d] = m0;
+    y = parseInt(y,10); mo = parseInt(mo,10); d = parseInt(d,10);
+    if(!(mo>=1 && mo<=12 && d>=1 && d<=31)) return String(raw);
+    const nowY = new Date().getFullYear();
+    const reiwaMax = nowY - 2018;                // 現在の令和年（例: 2026 → 8）
+    if(prefix && /^(令和|reiwa|r)$/i.test(prefix)){
+      y = 2018 + y;                              // 令和N / RN
+    }else if(prefix){
+      y = 1988 + y;                              // 平成N / HN（平成1=1989）
+    }else if(y >= 1 && y <= reiwaMax + 1){
+      y = 2018 + y;                              // 裸の年で「現在の令和年＋1」までなら令和
+    }else if(y <= 31){
+      y = 1988 + y;                              // 令和の上限を超え31以下 → 平成（平成31=2019）
+    }else if(y <= 68){
+      y = 2000 + y;                              // 32〜68 → 20xx
+    }else if(y <= 99){
+      y = 1900 + y;                              // 69〜99 → 19xx
+    }
+    // y が3〜4桁ならそのまま西暦とみなす
+    const pad = n => (n < 10 ? '0' + n : '' + n);
+    return y + '/' + pad(mo) + '/' + pad(d);
+  }
+
+  // ---------------- 作業状態の保存・復元（localStorage 自動保存 ＋ JSON エクスポート/インポート） ----------------
+  // 数十ページの通帳をまとめて処理する用途向け。ブラウザを閉じても・誤って「別の画像を読み込む」を
+  // 押しても、OCR結果と手修正を失わないようにする。
+  const SESSION_KEY = 'passbook_ocr_session_v1';
+  const SESSION_FORMAT = 'passbook-ocr-session/v1';
+  let __sessionSaveTimer = null;
+  // 「作業データを消去」を押した後は、タブを閉じても再保存しないよう自動保存を止める。
+  // 次回のOCR実行 / 作業の復元 で再び有効化する。
+  let sessionAutosaveDisabled = false;
+
+  // pages/rows から保存用オブジェクトを組み立てる。includeImages=false なら画像dataURLを含めない（軽量）。
+  // 体験版(IS_TRIAL)では、保存する行も「作業の続き」で復元される行も先頭 TRIAL_ROW_LIMIT 行までに絞る
+  // （JSONファイル保存・localStorage自動保存の両方）。製品版(IS_TRIAL=false)は全行を保存する。
+  function buildSession(includeImages){
+    return {
+      __format: SESSION_FORMAT,
+      savedAt: new Date().toISOString(),
+      activePageIndex: activePageIndex,
+      activeProfileKey: activeProfileKey,
+      boundaries: Array.isArray(boundaries) ? boundaries.slice() : [],
+      naturalW: naturalW, naturalH: naturalH,
+      numericPass: !!(el('chkNumericPass') && el('chkNumericPass').checked),
+      contrast: !!(el('chkContrast') && el('chkContrast').checked),
+      csvFormat: currentCsvFormat(),
+      journalSettings: readJournalSettingsFromUI(),
+      pages: pages.map(p => {
+        const o = {
+          name: p.name,
+          hasImage: !!(includeImages && p.dataUrl),
+          rows: limitRowsForOutput(p.rows || []).map(r => ({
+            date: r.date || '', desc: r.desc || '',
+            _descOcr: r._descOcr !== undefined ? r._descOcr : (r.desc || ''),
+            withdrawal: r.withdrawal || '', deposit: r.deposit || '', balance: r.balance || '',
+            acct: r.acct || '',
+            lowConfidence: !!r.lowConfidence,
+            _y0: (r._y0 !== undefined && r._y0 !== null) ? r._y0 : undefined,
+            _y1: (r._y1 !== undefined && r._y1 !== null) ? r._y1 : undefined
+          }))
+        };
+        if(includeImages && p.dataUrl) o.dataUrl = p.dataUrl;
+        return o;
+      })
+    };
+  }
+
+  function setAutoSaveStatus(ok){
+    const s = el('autoSaveStatus');
+    if(!s) return;
+    if(ok){ s.textContent = ''; }
+    else{ s.style.color = 'var(--warn)'; s.textContent = ' ⚠ 自動保存に失敗しました（データ量が大きい可能性）。「作業を保存(JSON)」で手動保存してください。'; }
+  }
+
+  // localStorage への自動保存（画像は含めない＝容量節約）
+  function saveSessionToStorage(){
+    if(sessionAutosaveDisabled || !pages.length){ return; }
+    try{
+      localStorage.setItem(SESSION_KEY, JSON.stringify(buildSession(false)));
+      setAutoSaveStatus(true);
+    }catch(e){
+      setAutoSaveStatus(false);
+    }
+  }
+  // 新しい作業（OCR実行・作業の復元）を始めるときに自動保存を有効化しなおす
+  function armSessionAutosave(){
+    sessionAutosaveDisabled = false;
+    const notice = el('postCsvNotice');
+    if(notice) notice.style.display = 'none';
+    const s = el('autoSaveStatus');
+    if(s){ s.style.color = 'var(--ok)'; s.textContent = ''; }
+  }
+  function scheduleSessionSave(){
+    clearTimeout(__sessionSaveTimer);
+    __sessionSaveTimer = setTimeout(saveSessionToStorage, 700);
+  }
+  function readStoredSession(){
+    try{
+      const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+      return (s && Array.isArray(s.pages) && s.pages.length) ? s : null;
+    }catch(e){ return null; }
+  }
+
+  // 保存オブジェクトから作業状態を復元し、STEP4を表示する
+  function applySession(s){
+    if(!s || !Array.isArray(s.pages) || !s.pages.length) return false;
+    if(typeof hideUndoToast === 'function') hideUndoToast();
+    armSessionAutosave(); // 復元した作業は再び自動保存の対象にする
+    pages = s.pages.map(p => ({
+      name: p.name || 'ページ',
+      dataUrl: p.dataUrl || null,
+      rows: Array.isArray(p.rows) ? p.rows.map(r => Object.assign({}, r)) : [],
+      status: 'done'
+    }));
+    boundaries = Array.isArray(s.boundaries) ? s.boundaries.slice() : [];
+    naturalW = +s.naturalW || 0;
+    naturalH = +s.naturalH || 0;
+    activeProfileKey = s.activeProfileKey || DESC_DEFAULT_PROFILE;
+    activePageIndex = Math.min(Math.max(0, parseInt(s.activePageIndex, 10) || 0), pages.length - 1);
+    if(el('chkNumericPass')) el('chkNumericPass').checked = !!s.numericPass;
+    if(el('chkContrast')) el('chkContrast').checked = !!s.contrast;
+    // 仕訳の出力形式・口座科目設定も一緒に復元（あれば）
+    if(s.csvFormat && el('csvFormat')) el('csvFormat').value = s.csvFormat;
+    if(s.journalSettings && el('jsAccountName')){
+      const js = s.journalSettings;
+      el('jsAccountName').value = js.accountName || '';
+      el('jsSubAccount').value = js.subAccount || '';
+      el('jsDefaultCounter').value = js.defaultCounter || '';
+      el('jsDefaultTax').value = js.defaultTax || '';
+      saveJournalSettings();
+    }
+    renderPageTabs();
+    renderActivePage();
+    setRail(4);
+    showPanel('Result');
+    saveSessionToStorage();
+    return true;
+  }
+
+  // STEP1 に戻ったとき、自動保存された作業があれば「復元」バーを出す
+  function refreshSessionRestoreBar(){
+    const bar = el('sessionRestoreBar');
+    if(!bar) return;
+    const s = readStoredSession();
+    if(!s){ bar.style.display = 'none'; return; }
+    const when = s.savedAt ? new Date(s.savedAt).toLocaleString('ja-JP') : '';
+    const nRows = s.pages.reduce((a,p)=> a + ((p.rows || []).length), 0);
+    el('sessionRestoreInfo').innerHTML =
+      '前回の作業（<b>' + s.pages.length + 'ページ / ' + nRows + '行</b>' + (when ? ' ・ ' + escapeHtml(when) : '') + '）が自動保存されています。';
+    bar.style.display = 'flex';
+  }
+
+  el('btnRestoreSession').addEventListener('click', ()=>{
+    const s = readStoredSession();
+    if(!s){ refreshSessionRestoreBar(); return; }
+    applySession(s);
+  });
+  el('btnDiscardSession').addEventListener('click', ()=>{
+    if(!confirm('自動保存された前回の作業を削除します。よろしいですか？')) return;
+    try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+    refreshSessionRestoreBar();
+  });
+
+  el('btnLoadSession').addEventListener('click', ()=> el('sessionFileInput').click());
+  el('sessionFileInput').addEventListener('change', e=>{
+    const file = e.target.files[0];
+    if(!file){ return; }
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try{
+        const s = JSON.parse(ev.target.result);
+        if(!s || !Array.isArray(s.pages) || !s.pages.length){
+          alert('この作業ファイルには復元できるデータが含まれていません。');
+        }else{
+          applySession(s);
+        }
+      }catch(err){
+        alert('作業ファイルの読み込みに失敗しました: ' + err.message);
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  });
+
+  // CSV出力後に出す「作業データを消去しますか？」の導線（強制ではなく、消し忘れ防止のひと押し）
+  function showPostCsvNotice(){
+    const notice = el('postCsvNotice');
+    if(!notice || sessionAutosaveDisabled) return;
+    el('postCsvNoticeText').textContent =
+      'CSVを出力しました。この端末に自動保存されている作業データ（通帳の内容）は、次にこの画面を開いたとき復元候補として残ります。共有パソコンをお使いの場合などは、ここで消去できます。';
+    el('btnClearSessionAfterCsv').style.display = '';
+    el('btnKeepSessionAfterCsv').style.display = '';
+    notice.style.display = 'flex';
+  }
+  el('btnClearSessionAfterCsv').addEventListener('click', ()=>{
+    sessionAutosaveDisabled = true;
+    clearTimeout(__sessionSaveTimer);
+    try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+    el('postCsvNoticeText').textContent =
+      '作業データを消去しました。この端末には残っていません（次回起動時の復元候補からも削除されました）。この後の修正を保存したい場合は「作業を保存(JSON)」をお使いください。';
+    el('btnClearSessionAfterCsv').style.display = 'none';
+    el('btnKeepSessionAfterCsv').style.display = 'none';
+    const s = el('autoSaveStatus');
+    if(s){ s.style.color = 'var(--warn)'; s.textContent = ' 自動保存は停止中です（「作業を保存(JSON)」で手動保存できます）。'; }
+  });
+  el('btnKeepSessionAfterCsv').addEventListener('click', ()=>{
+    el('postCsvNotice').style.display = 'none';
+  });
+
+  // タブを閉じる / 非表示になる直前に、デバウンス待ちの編集を取りこぼさず即時保存する
+  function flushSessionSave(){
+    if(!pages.length) return;
+    try{ if(el('panelResult') && el('panelResult').style.display !== 'none') syncActivePageFromTable(); }catch(e){}
+    saveSessionToStorage();
+  }
+  window.addEventListener('pagehide', flushSessionSave);
+  window.addEventListener('beforeunload', flushSessionSave);
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'hidden') flushSessionSave(); });
+
+  function setRail(activeStep){
+    for(let i=1;i<=4;i++){
+      const node = railNode(i);
+      node.classList.remove('active','done');
+      if(i < activeStep) node.classList.add('done');
+      if(i === activeStep) node.classList.add('active');
+    }
+  }
+
+  function showPanel(name){
+    ['Upload','Calib','Processing','Result'].forEach(p=>{
+      el('panel'+p).style.display = (p===name? 'block':'none');
+    });
+    if(name === 'Upload') refreshSessionRestoreBar();
+  }
+
+  // ---------------- STEP 1: load image(s) / PDF ----------------
+  const dropzone = el('dropzone');
+  const fileInput = el('fileInput');
+  dropzone.addEventListener('click', ()=>fileInput.click());
+  dropzone.addEventListener('dragover', e=>{e.preventDefault(); dropzone.classList.add('drag');});
+  dropzone.addEventListener('dragleave', ()=>dropzone.classList.remove('drag'));
+  dropzone.addEventListener('drop', e=>{
+    e.preventDefault(); dropzone.classList.remove('drag');
+    if(e.dataTransfer.files.length) loadFiles(e.dataTransfer.files);
+  });
+  fileInput.addEventListener('change', e=>{
+    if(e.target.files.length) loadFiles(e.target.files);
+    e.target.value = '';
+  });
+  el('btnSample').addEventListener('click', ()=>{
+    // 内蔵のサンプル通帳（テスト用ダミー画像）を生成して読み込む
+    pages = [{ name:'サンプル通帳', dataUrl: makeSampleDataUrl(), rows:null, status:'pending' }];
+    activePageIndex = 0;
+    setCalibrationImage(pages[0].dataUrl).then(()=>{ setRail(2); showPanel('Calib'); });
+  });
+
+  function fileToDataUrl(file){
+    return new Promise((resolve,reject)=>{
+      const reader = new FileReader();
+      reader.onload = ev => resolve(ev.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function renderPdfToPages(file, onProgress){
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const results = [];
+    for(let i=1;i<=pdf.numPages;i++){
+      if(onProgress) onProgress(i, pdf.numPages);
+      const page = await pdf.getPage(i);
+      // OCR精度のため高めの解像度でラスタライズする
+      const viewport = page.getViewport({ scale: 2.5 });
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(viewport.width);
+      c.height = Math.ceil(viewport.height);
+      const cctx = c.getContext('2d');
+      await page.render({ canvasContext: cctx, viewport }).promise;
+      const pageLabel = pdf.numPages > 1 ? `${file.name} (${i}/${pdf.numPages}p)` : file.name;
+      results.push({ name: pageLabel, dataUrl: c.toDataURL('image/png') });
+    }
+    return results;
+  }
+
+  async function loadFiles(fileList){
+    const files = Array.from(fileList);
+    if(files.length === 0) return;
+
+    setRail(1);
+    showPanel('Processing');
+    el('ocrProgress').classList.remove('show');
+    const statusEl = el('ocrStatus');
+    statusEl.textContent = 'ファイルを読み込んでいます...';
+
+    const newPages = [];
+    try{
+      for(const file of files){
+        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+        if(isPdf){
+          if(!window.pdfjsLib){
+            alert('PDF処理用ライブラリの読み込みに失敗しています。lib/pdf.min.js が正しく配置されているか確認してください。');
+            continue;
+          }
+          const pdfPages = await renderPdfToPages(file, (i,n)=>{
+            statusEl.textContent = `PDFを画像に変換しています: ${file.name} (${i}/${n}ページ)`;
+          });
+          newPages.push(...pdfPages);
+        }else{
+          const dataUrl = await fileToDataUrl(file);
+          newPages.push({ name: file.name, dataUrl });
+        }
+      }
+    }catch(err){
+      alert('ファイルの読み込み中にエラーが発生しました: ' + err.message);
+      console.error(err);
+    }
+
+    if(newPages.length === 0){
+      showPanel('Upload');
+      return;
+    }
+
+    pages = newPages.map(p => ({ name: p.name, dataUrl: p.dataUrl, rows: null, status: 'pending' }));
+    activePageIndex = 0;
+    await setCalibrationImage(pages[0].dataUrl);
+    setRail(2);
+    showPanel('Calib');
+  }
+
+  function dataUrlToImage(dataUrl){
+    return new Promise((resolve,reject)=>{
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = reject;
+      im.src = dataUrl;
+    });
+  }
+
+  // キャリブレーション用の基準画像(常に1枚目)を読み込む
+  function setCalibrationImage(dataUrl){
+    return new Promise(resolve=>{
+      img = new Image();
+      img.onload = () => {
+        naturalW = img.naturalWidth; naturalH = img.naturalHeight;
+        boundaries = [];
+        colRoles = []; rolesUserSet = false;
+        regenAutoRoles();
+        initCalibCanvas();
+        const info = el('calibPageInfo');
+        if(info) info.textContent = pages.length > 1 ? `（全${pages.length}ページ中 1枚目を基準に設定）` : '';
+        resolve();
+      };
+      img.src = dataUrl;
+    });
+  }
+
+  // ---------------- STEP 2: calibration ----------------
+  function bandCount(){ return boundaries.length + 1; }
+  function defaultColRoles(n){
+    const r = [];
+    for(let i=0;i<n;i++) r.push(STD_ROLES[i] || 'ignore');
+    return r;
+  }
+  function regenAutoRoles(){ colRoles = defaultColRoles(bandCount()); }
+  function fixRolesLength(){
+    const n = bandCount();
+    colRoles = colRoles.slice(0, n);
+    while(colRoles.length < n) colRoles.push('ignore');
+  }
+  // 境界線をバンド bandIdx の内部に挿入した（= bandIdx を2つに分割した）。
+  // 末尾への追加は「左から順に引いている」操作なので標準割り当てを再生成、
+  // 途中への挿入は分割された列の役割を両方が引き継ぐ（後続の役割がインデックスのズレで
+  // ひとつ後ろの意味に化けて、その列が黙って読み取られなくなるのを防ぐ）。
+  function onBoundaryInserted(bandIdx, wasAppend){
+    if(!rolesUserSet && wasAppend){ regenAutoRoles(); return; }
+    const role = colRoles[bandIdx] !== undefined ? colRoles[bandIdx] : 'ignore';
+    colRoles.splice(bandIdx + 1, 0, role);
+    fixRolesLength();
+  }
+  // 境界線 boundaryIdx を削除した（= バンド boundaryIdx と boundaryIdx+1 を統合した）。
+  // 統合後は「使わない」でない方の役割を残す（両方生きていれば左を優先）。
+  function onBoundaryRemoved(boundaryIdx, wasLast){
+    if(!rolesUserSet && wasLast){ regenAutoRoles(); return; }
+    const a = colRoles[boundaryIdx], b = colRoles[boundaryIdx + 1];
+    const kept = (a && a !== 'ignore') ? a : (b !== undefined ? b : 'ignore');
+    colRoles.splice(boundaryIdx, 2, kept);
+    fixRolesLength();
+  }
+  // OCR実行に必要な最低限の割り当てがあるか（日付か金額のいずれかが1つ以上）
+  function calibReady(){
+    return boundaries.length >= 1 &&
+      colRoles.some(r => r === 'date' || r === 'withdrawal' || r === 'deposit' || r === 'balance');
+  }
+
+  function initCalibCanvas(){
+    const maxW = 900;
+    scale = Math.min(1, maxW / naturalW);
+    canvas.width = naturalW * scale;
+    canvas.height = naturalH * scale;
+    drawCalib();
+    renderRoleControls();
+    updateBoundaryList();
+  }
+
+  function drawCalib(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img, 0,0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.strokeStyle = '#8f3b3b';
+    ctx.lineWidth = 2;
+    boundaries.forEach(bx=>{
+      const x = bx*scale;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+    });
+    // 各バンドの割り当てを画像上部に表示（確認用）
+    const edges = [0, ...boundaries.map(b=>b*scale), canvas.width];
+    ctx.fillStyle = 'rgba(143,59,59,0.92)';
+    ctx.font = '12px -apple-system,"Yu Gothic UI","Meiryo",sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for(let i=0;i<colRoles.length && i<edges.length-1;i++){
+      const label = ROLE_SHORT[colRoles[i]] || '';
+      if(!label) continue;
+      const mid = (edges[i] + edges[i+1]) / 2;
+      ctx.fillText(label, mid, 3);
+    }
+    ctx.restore();
+  }
+
+  // 各バンドに「この列は何か」を選ぶプルダウンを並べる
+  function renderRoleControls(){
+    const legend = el('colLegend');
+    legend.innerHTML = '';
+    if(bandCount() < 2){
+      const hint = document.createElement('span');
+      hint.className = 'role-hint';
+      hint.textContent = '画像をクリックして列の区切り線を引くと、ここに各列の割り当て（日付／摘要／金額など）が表示されます。';
+      legend.appendChild(hint);
+      return;
+    }
+    const hint = document.createElement('span');
+    hint.className = 'role-hint';
+    hint.textContent = '左から順に、各列が何の項目かを選んでください（並び順は通帳に合わせて自由に変えられます）:';
+    legend.appendChild(hint);
+    for(let i=0;i<bandCount();i++){
+      const cell = document.createElement('label');
+      cell.className = 'role-cell';
+      const b = document.createElement('b');
+      b.textContent = '第' + (i+1) + '列';
+      const sel = document.createElement('select');
+      ROLE_OPTS.forEach(o=>{
+        const opt = document.createElement('option');
+        opt.value = o.v; opt.textContent = o.label;
+        if(o.v === (colRoles[i] || 'ignore')) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', ()=>{
+        colRoles[i] = sel.value;
+        rolesUserSet = true;
+        drawCalib();
+        updateBoundaryList();
+      });
+      cell.appendChild(b);
+      cell.appendChild(sel);
+      legend.appendChild(cell);
+    }
+  }
+
+  function updateBoundaryList(){
+    el('boundaryList').textContent = boundaries.length
+      ? boundaries.map(b=>Math.round(b)+'px').join(' / ')
+      : '未設定';
+    el('btnRunOcr').disabled = !calibReady();
+  }
+
+  canvas.addEventListener('click', e=>{
+    if(justDragged){ justDragged = false; return; }
+    if(boundaries.length >= MAX_BOUNDARIES) return;
+    const rect = canvas.getBoundingClientRect();
+    // 既存の線のすぐ上をクリックした場合は追加しない（ドラッグ／削除の誤操作防止）
+    if(findNearestBoundaryIndex(e.clientX - rect.left) >= 0) return;
+    const x = (e.clientX - rect.left) / scale;
+    let insertAt = boundaries.length;
+    for(let i=0;i<boundaries.length;i++){ if(x < boundaries[i]){ insertAt = i; break; } }
+    const wasAppend = (insertAt === boundaries.length);
+    boundaries.splice(insertAt, 0, x);           // 挿入位置を保ったまま追加（末尾sortに頼らない）
+    onBoundaryInserted(insertAt, wasAppend);
+    drawCalib(); renderRoleControls(); updateBoundaryList();
+  });
+
+  // ダブルクリックで直近の境界線を削除
+  canvas.addEventListener('dblclick', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const hit = findNearestBoundaryIndex(e.clientX - rect.left);
+    if(hit < 0) return;
+    const wasLast = (hit === boundaries.length - 1);
+    boundaries.splice(hit, 1);
+    onBoundaryRemoved(hit, wasLast);
+    drawCalib(); renderRoleControls(); updateBoundaryList();
+  });
+
+  // ドラッグによる境界線の微調整
+  let dragIndex = -1;
+  let justDragged = false;
+  const HIT_TOLERANCE = 6; // px（キャンバス表示座標系）
+
+  function findNearestBoundaryIndex(cx){
+    let hit = -1, bestDist = HIT_TOLERANCE;
+    boundaries.forEach((bx,i)=>{
+      const d = Math.abs(bx*scale - cx);
+      if(d <= bestDist){ bestDist = d; hit = i; }
+    });
+    return hit;
+  }
+
+  canvas.addEventListener('mousedown', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    dragIndex = findNearestBoundaryIndex(cx);
+  });
+
+  canvas.addEventListener('mousemove', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    if(dragIndex >= 0){
+      justDragged = true;
+      // 隣の線を越えないようにクランプ（バンドの並びが入れ替わって割り当てがズレるのを防ぐ）
+      const lo = dragIndex > 0 ? boundaries[dragIndex - 1] + 1 : 0;
+      const hi = dragIndex < boundaries.length - 1 ? boundaries[dragIndex + 1] - 1 : naturalW;
+      boundaries[dragIndex] = Math.max(lo, Math.min(hi, cx / scale));
+      drawCalib();
+    }else{
+      canvas.style.cursor = (findNearestBoundaryIndex(cx) >= 0) ? 'ew-resize' : 'crosshair';
+    }
+  });
+
+  window.addEventListener('mouseup', ()=>{
+    if(dragIndex >= 0){
+      boundaries.sort((a,b)=>a-b);
+      dragIndex = -1;
+      drawCalib(); updateBoundaryList();
+      setTimeout(()=>{ justDragged = false; }, 0);
+    }
+  });
+
+  el('btnResetCalib').addEventListener('click', ()=>{
+    boundaries = [];
+    colRoles = []; rolesUserSet = false;
+    regenAutoRoles();
+    drawCalib(); renderRoleControls(); updateBoundaryList();
+  });
+
+  // ---------------- プロファイル: 保存 / 呼び出し / インポート / エクスポート ----------------
+  refreshProfileSelect();
+  // 起動時: 前回の自動保存があれば復元バーを表示（STEP1は既定で表示されている）
+  refreshSessionRestoreBar();
+  // 起動時: 前回選んだCSV出力形式を復元
+  try{
+    const lf = localStorage.getItem(CSV_FORMAT_KEY);
+    if(lf && el('csvFormat')){ el('csvFormat').value = lf; applyCsvFormatUI(); }
+  }catch(e){}
+
+  el('btnSaveProfile').addEventListener('click', ()=>{
+    if(!calibReady()){
+      alert('先に列の区切り線を引き、各列の割り当て（日付・金額など）を設定してください。');
+      return;
+    }
+    const name = prompt('プロファイル名を入力してください（例: 三菱UFJ銀行 普通預金）');
+    if(!name) return;
+    const profiles = loadProfiles();
+    // 相対座標(%)＋各列の割り当てを保存（銀行ごとに並び順が違っても再現できるようにするため）
+    profiles[name] = {
+      boundariesPct: boundaries.map(b => b / naturalW),
+      colRoles: colRoles.slice(),
+      savedAt: new Date().toISOString()
+    };
+    saveProfilesToStorage(profiles);
+    refreshProfileSelect();
+    el('profileSelect').value = name;
+  });
+
+  el('btnLoadProfile').addEventListener('click', ()=>{
+    const name = el('profileSelect').value;
+    if(!name){ alert('呼び出すプロファイルを選択してください。'); return; }
+    if(naturalW === 0){ alert('先に画像を読み込んでください。'); return; }
+    const profiles = loadProfiles();
+    const p = profiles[name];
+    if(!p || !Array.isArray(p.boundariesPct)){ alert('このプロファイルは見つかりませんでした。'); return; }
+    boundaries = p.boundariesPct.map(pct => pct * naturalW);
+    if(Array.isArray(p.colRoles) && p.colRoles.length === boundaries.length + 1){
+      colRoles = p.colRoles.slice();
+    }else{
+      // 割り当て情報が無い旧プロファイルは標準の並びで補完
+      colRoles = defaultColRoles(boundaries.length + 1);
+    }
+    rolesUserSet = true; // 呼び出した割り当てを自動再生成で上書きしない
+    drawCalib(); renderRoleControls(); updateBoundaryList();
+  });
+
+  el('btnExportProfiles').addEventListener('click', ()=>{
+    const profiles = loadProfiles();
+    const descDict = loadDescDict();
+    if(Object.keys(profiles).length === 0 && Object.keys(descDict).length === 0){
+      alert('保存済みのプロファイルがありません。'); return;
+    }
+    // v2形式: 列位置プロファイルに加え、摘要の学習辞書も一緒に持ち出す（事務所内で共有できるように）
+    const payload = { __format: 'passbook-ocr/v2', exportedAt: new Date().toISOString(), profiles, descDict };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'passbook_ocr_profiles.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  el('btnImportProfiles').addEventListener('click', ()=>el('importProfileInput').click());
+  el('importProfileInput').addEventListener('change', e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try{
+        const parsed = JSON.parse(ev.target.result);
+        // v2形式(profiles + descDict) と 旧形式(プロファイルのフラットなマップ) の両対応
+        const incomingProfiles = (parsed && parsed.__format === 'passbook-ocr/v2') ? (parsed.profiles || {}) : (parsed || {});
+        const incomingDict = (parsed && parsed.__format === 'passbook-ocr/v2') ? (parsed.descDict || {}) : {};
+
+        const profiles = loadProfiles();
+        let count = 0;
+        Object.keys(incomingProfiles).forEach(name=>{
+          if(incomingProfiles[name] && Array.isArray(incomingProfiles[name].boundariesPct)){
+            profiles[name] = incomingProfiles[name];
+            count++;
+          }
+        });
+        saveProfilesToStorage(profiles);
+
+        // 摘要辞書のマージ: プロファイル名ごと・エントリごとに、頻度(count)が多い方を採用
+        let dictCount = 0;
+        if(incomingDict && typeof incomingDict === 'object'){
+          const dict = loadDescDict();
+          Object.keys(incomingDict).forEach(pk=>{
+            const inc = incomingDict[pk];
+            if(!inc || !inc.entries) return;
+            const bucket = getProfileBucket(dict, pk);
+            Object.keys(inc.entries).forEach(k=>{
+              const ie = inc.entries[k];
+              if(!ie || !ie.value) return;
+              const ex = bucket.entries[k];
+              if(!ex || (ie.count||1) > (ex.count||1)){
+                bucket.entries[k] = { value: ie.value, count: ie.count||1, updatedAt: ie.updatedAt || new Date().toISOString() };
+                dictCount++;
+              }
+            });
+            pruneDescBucket(bucket);
+          });
+          saveDescDict(dict);
+        }
+
+        refreshProfileSelect();
+        refreshDescVocabList();
+        updateDescDictNote();
+        alert(count + '件のプロファイルと ' + dictCount + '件の摘要辞書を取り込みました。');
+      }catch(err){
+        alert('JSONファイルの読み込みに失敗しました: ' + err.message);
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  });
+
+  // ---------------- 画像補正: 回転（読み込み済みの全ページに一括適用） ----------------
+  function rotateDataUrl(dataUrl, deg){
+    return new Promise(resolve=>{
+      const tmp = new Image();
+      tmp.onload = () => {
+        const rad = deg * Math.PI / 180;
+        const c = document.createElement('canvas');
+        if(Math.abs(deg) === 90 || Math.abs(deg) === 270){
+          c.width = tmp.naturalHeight; c.height = tmp.naturalWidth;
+        }else{
+          c.width = tmp.naturalWidth; c.height = tmp.naturalHeight;
+        }
+        const cctx = c.getContext('2d');
+        cctx.save();
+        cctx.translate(c.width/2, c.height/2);
+        cctx.rotate(rad);
+        cctx.drawImage(tmp, -tmp.naturalWidth/2, -tmp.naturalHeight/2);
+        cctx.restore();
+        resolve(c.toDataURL('image/png'));
+      };
+      tmp.src = dataUrl;
+    });
+  }
+
+  async function rotateAllPages(deg){
+    if(pages.length === 0) return;
+    for(let i=0;i<pages.length;i++){
+      pages[i].dataUrl = await rotateDataUrl(pages[i].dataUrl, deg);
+    }
+    // 回転後は列位置が変わるため、キャリブレーションを1枚目基準で読み込み直す
+    await setCalibrationImage(pages[0].dataUrl);
+  }
+  el('btnRotateLeft').addEventListener('click', ()=>rotateAllPages(-90));
+  el('btnRotateRight').addEventListener('click', ()=>rotateAllPages(90));
+  el('btnRotate180').addEventListener('click', ()=>rotateAllPages(180));
+
+  // ---------------- STEP 3: OCR（全ページを1つのWorkerで順次バッチ処理） ----------------
+  el('btnRunOcr').addEventListener('click', runOcr);
+
+  async function runOcr(){
+    // このバッチの摘要学習辞書のバケット = OCR実行時に選ばれているプロファイル名
+    activeProfileKey = ((el('profileSelect') && el('profileSelect').value) || '').trim() || DESC_DEFAULT_PROFILE;
+    armSessionAutosave(); // 新しいバッチなので自動保存を有効化しなおす
+    setRail(3);
+    showPanel('Processing');
+    const statusEl = el('ocrStatus');
+    const progEl = el('ocrProgress');
+    const bar = progEl.querySelector('div');
+    progEl.classList.add('show');
+    bar.style.width = '0%';
+    statusEl.textContent = 'OCRエンジンを初期化しています（初回はライブラリ取得のため数秒〜数十秒）...';
+
+    try{
+      const worker = await Tesseract.createWorker('jpn', 1, {
+        // ローカル同梱ファイルのみを参照する（CDNには一切アクセスしない）
+        workerPath: './lib/worker.min.js',
+        // 注: workerBlobURLは既定(true)のままにする。file://で開いた場合、Chromeは
+        // Workerをfile://パスから直接構築することをブロックするため(origin 'null'エラー)、
+        // Blob経由での起動が回避策として必須。
+        corePath: './lib/tesseract-core.wasm.js',
+        langPath: './lang-data',
+        gzip: true,
+        logger: m => {
+          if(m.status && typeof m.progress === 'number'){
+            statusEl.dataset.subStatus = `${m.status} (${Math.round(m.progress*100)}%)`;
+          }
+        }
+      });
+
+      for(let i=0;i<pages.length;i++){
+        statusEl.textContent = `OCR実行中... ${i+1}/${pages.length}ページ目（${pages[i].name}）`;
+        bar.style.width = Math.round((i/pages.length)*100) + '%';
+
+        const pageImg = await dataUrlToImage(pages[i].dataUrl);
+        const { canvas: ocrCanvas, scaleFactor: ocrScale } = prepareOcrCanvasFor(
+          pageImg, pageImg.naturalWidth, pageImg.naturalHeight
+        );
+        const { data } = await worker.recognize(ocrCanvas, {}, { blocks: true });
+        const words = extractWords(data, ocrScale);
+        pages[i].rows = buildRowsFromWordsFor(words, pageImg.naturalWidth, pageImg.naturalHeight);
+        pages[i].status = 'done';
+
+        // ---- 第2パス: 金額欄(支払/預り/差引残高)を数字限定で再OCR ----
+        const numericPassOn = el('chkNumericPass') && el('chkNumericPass').checked;
+        const startXOriginal = amountCropStartX(pageImg.naturalWidth);
+        if(numericPassOn && calibReady() && startXOriginal != null){
+          try{
+            statusEl.textContent = `OCR実行中... ${i+1}/${pages.length}ページ目（金額欄を数字限定で再認識）`;
+            // 切り出し帯の左端は、金額列の右寄せ数字の先頭桁（例「7,430」の「7」）が
+            // 列境界のわずかに外側に描かれていても切り落とさないよう、ページ幅の約4%だけ
+            // 左に広げる（旧実装は4pxのみで、先頭の桁グループを落として「430」になっていた）。
+            const leftPadOriginal = Math.max(8, Math.round(pageImg.naturalWidth * 0.04));
+            const startXScaled = Math.max(0, Math.floor((startXOriginal - leftPadOriginal) * ocrScale));
+            const cropWidth = ocrCanvas.width - startXScaled;
+
+            if(cropWidth > 20){
+              const cropCanvas = document.createElement('canvas');
+              cropCanvas.width = cropWidth;
+              cropCanvas.height = ocrCanvas.height;
+              cropCanvas.getContext('2d').drawImage(
+                ocrCanvas, startXScaled, 0, cropWidth, ocrCanvas.height, 0, 0, cropWidth, ocrCanvas.height
+              );
+
+              // 数字だけに絞ると、隣接する取扱店コード(QT, LTなど)のアルファベットを
+              // 無理やり数字として誤読し、区切りが消えてしまう問題があったため、
+              // アルファベットも許可リストに含めて「文字として」正しく認識させ、
+              // 数字との境目が自然に区切られるようにする。
+              await worker.setParameters({ tessedit_char_whitelist: '0123456789,.★-ABCDEFGHIJKLMNOPQRSTUVWXYZ' });
+              const { data: amountData } = await worker.recognize(cropCanvas, {}, { blocks: true });
+              await worker.setParameters({ tessedit_char_whitelist: '' }); // 次ページの通常パスのために解除
+
+              const amountWords = extractWordsShifted(amountData, ocrScale, startXScaled);
+              const amountRows = buildAmountRowsFor(amountWords, pageImg.naturalWidth);
+              mergeAmountsIntoRows(pages[i].rows, amountRows);
+            }
+          }catch(passErr){
+            // 第2パスが失敗しても、第1パスの結果はそのまま活かして処理を続行する
+            console.error('金額欄の再OCRでエラー:', passErr);
+            try{ await worker.setParameters({ tessedit_char_whitelist: '' }); }catch(e){}
+          }
+        }
+
+        // 残高検算で「消すとちょうど一致する」金額欄のOCRノイズを除去する（前ページからの残高も引き継ぐ）
+        scrubReconciliationNoise(pages[i].rows, lastKnownBalanceBefore(i));
+
+        bar.style.width = Math.round(((i+1)/pages.length)*100) + '%';
+      }
+
+      await worker.terminate();
+
+      activePageIndex = 0;
+      renderPageTabs();
+      renderActivePage();
+      setRail(4);
+      showPanel('Result');
+      saveSessionToStorage();
+    }catch(err){
+      statusEl.textContent = 'エラーが発生しました: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  // 通帳の写真・スキャンは解像度が低いことが多く、そのままではOCR精度が落ちやすい。
+  // 画像の短辺を基準に、最低でも約1600pxになるよう拡大してからOCRにかける。
+  function prepareOcrCanvasFor(image, w, h){
+    const targetMinWidth = 1600;
+    const scaleFactor = Math.max(1, targetMinWidth / w);
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * scaleFactor);
+    c.height = Math.round(h * scaleFactor);
+    const cctx = c.getContext('2d');
+    cctx.imageSmoothingEnabled = true;
+    cctx.imageSmoothingQuality = 'high';
+    cctx.drawImage(image, 0, 0, c.width, c.height);
+    if(el('chkContrast') && el('chkContrast').checked){
+      applyContrastBoost(cctx, c.width, c.height);
+    }
+    return { canvas: c, scaleFactor };
+  }
+
+  // グレースケール化＋コントラスト強調。かすれた通帳の文字を判別しやすくする。
+  function applyContrastBoost(ctx2d, w, h){
+    const imgData = ctx2d.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const factor = 1.6;
+    for(let i=0;i<d.length;i+=4){
+      const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      const adjusted = Math.min(255, Math.max(0, (gray - 128) * factor + 128));
+      d[i] = d[i+1] = d[i+2] = adjusted;
+    }
+    ctx2d.putImageData(imgData, 0, 0);
+  }
+
+  function extractWords(data, ocrScale){
+    // tesseract.js v5 returns data.blocks[].paragraphs[].lines[].words[]
+    // OCRは拡大後の画像に対して実行しているため、座標をscaleFactorで割って元画像基準に戻す
+    // （列キャリブレーションの境界線は元画像の座標系で保存されているため）
+    const s = ocrScale || 1;
+    const words = [];
+    (data.blocks || []).forEach(block=>{
+      (block.paragraphs || []).forEach(par=>{
+        (par.lines || []).forEach(line=>{
+          (line.words || []).forEach(w=>{
+            if(!w.text || !w.text.trim()) return;
+            // 注: 信頼度(confidence)によるフィルタは行わない。
+            // ★マーク(通帳の偽造防止記号)に挟まれた数字は文字自体は正しく読めていても
+            // 信頼度スコアが不当に低く出ることが実データで確認できたため、
+            // 信頼度では足切りせず、後段の正規表現(金額らしさ)で妥当性を判断する。
+            words.push({
+              text: w.text.trim(),
+              x: ((w.bbox.x0 + w.bbox.x1)/2) / s,
+              x0: w.bbox.x0 / s, x1: w.bbox.x1 / s,
+              y: ((w.bbox.y0 + w.bbox.y1)/2) / s,
+              y0: w.bbox.y0 / s, y1: w.bbox.y1 / s
+            });
+          });
+        });
+      });
+    });
+    return words;
+  }
+
+  function median(arr){
+    if(arr.length === 0) return 0;
+    const s = [...arr].sort((a,b)=>a-b);
+    const mid = Math.floor(s.length/2);
+    return s.length % 2 ? s[mid] : (s[mid-1]+s[mid])/2;
+  }
+
+  // 単語同士の隙間が狭ければ「同じ数字が断片化しただけ」とみなして直接連結し、
+  // 隙間が広ければ「本当に別の単語（残高の後ろの取扱店コードなど）」とみなして空白で区切る。
+  // これにより「1,021,」+「259」→「1,021,259」(連結)、
+  // 「1,012,259」+「422」(取扱店コード、離れている)→「1,012,259 422」(区切り、正規表現が先頭だけ拾う)
+  // の両方を正しく扱える。
+  function joinWordsSmart(arr){
+    const sorted = [...arr].sort((a,b)=>a.x0-b.x0);
+    let result = '';
+    let prevX1 = null;
+    sorted.forEach(w=>{
+      const height = (w.y1 - w.y0) || 12;
+      const gapThreshold = height * 0.7;
+      if(prevX1 !== null){
+        const gap = w.x0 - prevX1;
+        if(gap > gapThreshold){
+          result += ' ';
+        }
+      }
+      result += w.text;
+      prevX1 = w.x1;
+    });
+    return result.trim();
+  }
+
+  function groupIntoLines(words){
+    // 単語のY座標を昇順に並べ、「認識された文字の高さ」を基準にした動的な許容値で行を分ける。
+    // 画像サイズに対する固定割合(旧ロジック)だと、行間が密な実物の通帳で
+    // 隣接する別行が誤って1行に統合されてしまう問題があったため、文字高さ基準に変更。
+    const sorted = [...words].sort((a,b)=>a.y-b.y);
+    const heights = sorted.map(w=>(w.y1 - w.y0)).filter(h=>h>0);
+    const medianH = median(heights) || 12;
+    const tol = Math.max(medianH * 0.65, 4);
+
+    const lines = [];
+    let current = [sorted[0]];
+    let currentY = sorted[0].y;
+    for(let i=1;i<sorted.length;i++){
+      const w = sorted[i];
+      if(Math.abs(w.y - currentY) <= tol){
+        current.push(w);
+        currentY = current.reduce((s,x)=>s+x.y,0)/current.length;
+      }else{
+        lines.push(current);
+        current = [w];
+        currentY = w.y;
+      }
+    }
+    lines.push(current);
+    lines.forEach(l=>l.sort((a,b)=>a.x-b.x));
+    return lines;
+  }
+
+  const DBG = /[?&]debug\b/.test(location.search);
+  const HAS_DIGIT_RE = /[0-9０-９]/;
+  // 見出し行に現れやすい語（銀行ごとに表記ゆれがあるため広めに）
+  const HEADER_KW_RE = /年月日|取り?扱|摘要|お?支払(金額)?|お?預り(金額)?|お?預入|お?引出|差引残高|残高|記号|店番号|口座番号|口座科目|科目|番号|年月|日付|内容|区分|備考/;
+
+  // 1行分の単語を、キャリブレーション境界＋各列の役割(colRoles)で仕分けする。
+  // ・語の割り当ては「中心点」ではなく「バンドとの重なり幅が最大」で決める（境界をまたいだ
+  //   右寄せのカナ氏名などを、中心点判定で丸ごと隣の列に落とさないため）。
+  // ・数字を含まない語が金額列に入った場合は、最寄りの摘要列へ寄せ直す（摘要の一部が
+  //   金額列に流れ込んで消えるのを防ぐ）。
+  // ・desc が複数バンドに割り当てられていれば連結する。ignore バンドは捨てる。
+  function bucketLineByRoles(line, pageBoundaries){
+    const buckets = { date:[], desc:[], withdrawal:[], deposit:[], balance:[] };
+    const edges = [0, ...pageBoundaries, Infinity];
+    const descBands = [];
+    colRoles.forEach((r,i)=>{ if(r === 'desc') descBands.push(i); });
+
+    line.forEach(w=>{
+      const x0 = (w.x0 != null) ? w.x0 : w.x;
+      const x1 = (w.x1 != null) ? w.x1 : w.x;
+      // 1) 重なり幅が最大のバンドへ
+      let bi = 0, bestOv = -Infinity;
+      for(let i=0;i<colRoles.length;i++){
+        const ov = Math.min(x1, edges[i+1]) - Math.max(x0, edges[i]);
+        if(ov > bestOv){ bestOv = ov; bi = i; }
+      }
+      let role = colRoles[bi] || 'ignore';
+      // 2) 数字を含まない語が金額列に入ったら、最寄りの摘要列へ
+      if((role === 'withdrawal' || role === 'deposit' || role === 'balance')
+         && !HAS_DIGIT_RE.test(w.text) && descBands.length){
+        let nd = descBands[0], nbest = Infinity;
+        descBands.forEach(di=>{ const d = Math.abs(di - bi); if(d < nbest){ nbest = d; nd = di; } });
+        role = colRoles[nd];
+      }
+      if(buckets[role]) buckets[role].push(w);
+    });
+    const t = arr => joinWordsSmart(arr);
+    const out = {
+      date: t(buckets.date),
+      desc: t(buckets.desc),
+      withdrawal: normalizeAmount(t(buckets.withdrawal)),
+      deposit: normalizeAmount(t(buckets.deposit)),
+      balance: normalizeAmount(t(buckets.balance))
+    };
+    if(DBG){
+      const dump = k => JSON.stringify(buckets[k].map(w=>w.text));
+      console.log('[bucket] descWords=' + dump('desc') + ' -> desc=' + JSON.stringify(out.desc)
+        + ' | W=' + dump('withdrawal') + ' D=' + dump('deposit') + ' B=' + dump('balance'));
+    }
+    return out;
+  }
+
+  // 摘要だけの断片行（日付も金額も無い）を、Yが近い取引行の摘要へ吸収する。
+  function mergeOrphanDescRows(rows){
+    if(!rows || rows.length < 2) return rows;
+    const heights = rows.map(r => (r._y1 - r._y0)).filter(h => h > 0);
+    const mh = median(heights) || 12;
+    const gapMax = mh * 1.6;                 // 1行分ちょっとまでなら「続き」とみなす
+    const isData = r => /[0-9０-９]/.test(r.date) || r.withdrawal || r.deposit || r.balance;
+    const out = [];
+    rows.forEach(r=>{
+      if(!isData(r) && r.desc){
+        // 直前のキープ行に近ければ、その行の摘要に連結
+        const prev = out[out.length - 1];
+        if(prev && (r._y0 - prev._y1) <= gapMax){
+          prev.desc = prev.desc ? (prev.desc + ' ' + r.desc) : r.desc;
+          if(prev._descOcr !== undefined) prev._descOcr = prev.desc;
+          if(r._y1 != null) prev._y1 = Math.max(prev._y1 != null ? prev._y1 : r._y1, r._y1);
+          if(DBG) console.log('[orphan-merge<-] "' + r.desc + '" into "' + prev.desc + '"');
+          return;
+        }
+      }
+      // 直前の断片が、これから積む取引行の「続きではなく前置き」だったケース: 直近の非データ行を吸収
+      if(isData(r) && r.desc !== undefined){
+        const prev = out[out.length - 1];
+        if(prev && !isData(prev) && prev.desc && !HEADER_KW_RE.test(prev.desc) && (r._y0 - prev._y1) <= gapMax){
+          r.desc = prev.desc + (r.desc ? ' ' + r.desc : '');
+          if(r._descOcr !== undefined) r._descOcr = r.desc;
+          if(prev._y0 != null) r._y0 = Math.min(r._y0 != null ? r._y0 : prev._y0, prev._y0);
+          if(DBG) console.log('[orphan-merge->] "' + prev.desc + '" into "' + r.desc + '"');
+          out.pop();
+        }
+      }
+      out.push(r);
+    });
+    return out;
+  }
+
+  function buildRowsFromWordsFor(words, pageNaturalW, pageNaturalH){
+    if(words.length === 0) return [];
+    // 基準ページ(naturalW)で作った境界線を、各ページ自身の解像度(pageNaturalW)に%換算して適用する。
+    // ページごとに写真の解像度がバラバラでも、同じ列位置プロファイルを使い回せるようにするため。
+    const pageBoundaries = boundaries.map(b => (b / naturalW) * pageNaturalW);
+
+    // 1) group into lines by adaptive Y proximity (文字高さ基準)
+    const lines = groupIntoLines(words);
+
+    // 2) 各行を colRoles に従って仕分け
+    let rows = lines.map((line, lineIdx)=>{
+      const b = bucketLineByRoles(line, pageBoundaries);
+      let rawDate = normalizeDateText(b.date);
+      // 罫線・区切り記号だけの「日付」（"-" "—" "|" "★" "・" 等）はゴミ扱いで空にする。
+      // これを残すと、日付だけに "-" が入った空同然の行が消えずに1行増えてしまう。
+      const SYMBOL_ONLY_RE = /^[\s\-–—―_|.,、。・:;*＊★☆「」『』()\/\\~〜ー]+$/;
+      if(rawDate && SYMBOL_ONLY_RE.test(rawDate)) rawDate = '';
+      // 摘要が区切り記号だけ（"-" 等）のときも空にする（罫線の誤読）。
+      const desc = (b.desc && SYMBOL_ONLY_RE.test(b.desc)) ? '' : b.desc;
+      const withdrawal = b.withdrawal;
+      const deposit = b.deposit;
+      const balance = b.balance;
+
+      const lowConfidence = !rawDate && !withdrawal && !deposit && !balance;
+      const rowY = line.reduce((s,w)=>s+w.y,0)/line.length;
+      const rowY0 = Math.min(...line.map(w=>w.y0));
+      const rowY1 = Math.max(...line.map(w=>w.y1));
+
+      // _descOcr: OCRが最初に読んだ摘要。ユーザーが直した後も保持し、学習・候補照合の元にする。
+      return { date: rawDate, desc, _descOcr: desc, withdrawal, deposit, balance, lowConfidence: lowConfidence || line.length < 2, _y: rowY, _y0: rowY0, _y1: rowY1, _lineIdx: lineIdx };
+    });
+
+    // 2.1) 完全に空の行を落とす
+    rows = rows.filter(r => r.date || r.withdrawal || r.deposit || r.balance);
+
+    // 2.2) ヘッダー行の除外(1): 「年月日」「記号・店番号」等の見出し語を含み、日付数字も金額も無い行
+    rows = rows.filter(r => {
+      const looksLikeHeader = HEADER_KW_RE.test(r.desc + r.date)
+        && !/[0-9０-９]/.test(r.date) && !r.withdrawal && !r.deposit && !r.balance;
+      return !looksLikeHeader;
+    });
+
+    // 2.3) ヘッダー行の除外(2): 先頭から「日付に数字がある」データらしい行が最初に現れるまで、
+    // 非データ行を繰り返し取り除く。見出しが2行に分かれて残っても対応でき、見出し語がOCRで
+    // 化けていても（例:「記号・店番号」→「川上」）取りこぼさない。
+    // 「日付らしき数字」は無条件で実データ行到達のシグナルとして最優先する。一方、日付が無いまま
+    // 金額だけがある行は、画像最上部（見出し帯）にある間は「透かし・バーコード等のノイズが
+    // 偶然、金額らしい数字に化けたもの」の疑いを優先して除外し続ける（実データ検証で、これが
+    // 原因で見出し残骸が実データ扱いされ、以降の残高検算まで狂うケースを確認したため）。
+    // 見出し帯を抜けている場合は、金額があればそこを実データ行の先頭とみなす。
+    const HEADER_BAND_RATIO = 0.18;
+    while(rows.length){
+      const r = rows[0];
+      const hasDate = /[0-9０-９]/.test(r.date);
+      if(hasDate) break;
+      const inHeaderBand = pageNaturalH ? (r._y0 / pageNaturalH) <= HEADER_BAND_RATIO : true;
+      if(inHeaderBand){
+        if(DBG) console.log('[header-skip] ' + JSON.stringify({d: r.date, desc: r.desc}));
+        rows.shift();
+        continue;
+      }
+      if(r.withdrawal || r.deposit || r.balance) break;
+      break;
+    }
+
+    // 2.4) 「摘要だけの断片行」を、Yが近い取引行の摘要に統合する。
+    // 1件の摘要が「振替ＩＮＢ」＋「スズキイチロウ」のように2行に分かれて印字されていて、
+    // groupIntoLines が別行に分けてしまったケースの救済。ヘッダー除去後に行うので見出し語は混ざらない。
+    rows = mergeOrphanDescRows(rows);
+
+    if(DBG) console.log('[rows] ' + JSON.stringify(rows.map(r => ({d:r.date, desc:r.desc, W:r.withdrawal, D:r.deposit, B:r.balance}))));
+    return rows;
+  }
+
+  // 日付欄のOCRテキストから、実際の日付らしい部分だけを抜き出す。
+  // 通帳左端に印字された行番号（01,02,03…）が日付列とわずかな隙間しかなく、境界線を
+  // ピクセル単位で追い込まないと行番号が日付の頭に紛れ込んでしまうケースが実データ検証
+  // （見開き写真で上下ページの列位置が微妙にズレる場合など）で見つかったため、金額側の
+  // normalizeAmount と同じ考え方で「日付らしい形」を正規表現で抜き出す方式にし、境界線の
+  // 精度（何ピクセル単位で合わせるか）への依存度を下げる。見つからなければ元の文字列を
+  // そのまま返し、低信頼度の判定は呼び出し側の既存ロジックに委ねる。
+  //
+  // 対応:
+  //  ・区切りは「-」だけでなく「.」「/」「・」「年月日」「空白」も許容
+  //    （実物の通帳は「28.01.06」形式が多く、旧実装（-限定）では行番号除去も日付抽出も効かなかった）
+  //  ・行番号が年に貼り付いた「0128.01.06」「128.01.22」からも、月1-12・日1-31になる並びを
+  //    選ぶことで日付部分「28.01.06」だけを取り出す
+  //  ・2つ目の区切りが欠けた「27.1228」（OCRがドットを落として月日が連結）も、日が2桁のときに
+  //    限り救済する（行番号込みの「127.1228」→「27.12.28」）
+  //  ・どのパターンでも月1-12・日1-31 を満たさない候補は採用しない（数字列に釣られない）
+  //  ・通常形は元の区切り文字を保つ（toJournalDate 側が「. - / 年月日」いずれも解釈できる）
+  function normalizeDateText(s){
+    if(!s) return s;
+    const t = String(s).replace(/[０-９]/g, d => '0123456789'['０１２３４５６７８９'.indexOf(d)]);
+
+    // 1) 通常形（区切りが2つそろっている）— マッチ部分をそのまま返す
+    {
+      const re = /([A-Za-zＡ-Ｚａ-ｚ]?)\s*(\d{1,2})(\s*[.\-/・年]\s*)(\d{1,2})(\s*[.\-/・月]\s*)(\d{1,2})\s*日?/g;
+      let mm;
+      while((mm = re.exec(t)) !== null){
+        const mo = +mm[4], da = +mm[6];
+        if(mo >= 1 && mo <= 12 && da >= 1 && da <= 31){
+          return (mm[1] + mm[2] + mm[3] + mm[4] + mm[5] + mm[6]).replace(/\s+/g, '');
+        }
+      }
+    }
+    // 2) 救済形（2つ目の区切りが欠け、月日が4桁に連結）— 「.」を補って返す
+    {
+      const re = /([A-Za-zＡ-Ｚａ-ｚ]?)\s*(\d{1,2})\s*[.\-/・年]\s*(\d{1,2})\s*(\d{2})\s*日?/g;
+      let mm;
+      while((mm = re.exec(t)) !== null){
+        const mo = +mm[3], da = +mm[4];
+        if(mo >= 1 && mo <= 12 && da >= 1 && da <= 31){
+          return mm[1] + mm[2] + '.' + mm[3] + '.' + mm[4];
+        }
+      }
+    }
+    return s;
+  }
+
+  function normalizeAmount(s){
+    if(!s) return '';
+    // 全角数字・全角カンマ/ピリオドを半角へ寄せる（OCRが混在させることがある）
+    s = String(s)
+      .replace(/[０-９]/g, d => '0123456789'['０１２３４５６７８９'.indexOf(d)])
+      .replace(/[，、]/g, ',').replace(/[．]/g, '.');
+
+    // 最初の数字の位置
+    const firstDigit = s.search(/[0-9]/);
+    if(firstDigit < 0) return '';
+
+    // 数字の直前が「文字」の場合は、参照番号やコード（例: ﾒｲｼﾞ123, QT12345）とみなして
+    // 金額に採用しない。誤った金額を高確度で出すより、空欄にして目視確認を促す方が事故が少ない。
+    // ※直前が数字や記号（¥ ★ * , . 符号等）の場合はOCR断片なので許容する。
+    {
+      let j = firstDigit - 1;
+      while(j >= 0 && /\s/.test(s[j])) j--;
+      // 直前に連なる「文字」の並びを数える（空白を挟んでも連続とみなす）。
+      let letters = '';
+      while(j >= 0){
+        const ch = s[j];
+        if(/\s/.test(ch)){ j--; continue; }
+        if(/[A-Za-zＡ-Ｚａ-ｚ぀-ヿｦ-ﾟ一-鿿]/.test(ch)){ letters = ch + letters; j--; continue; }
+        break;
+      }
+      // カナ・漢字が絡む、または英字が2文字以上 → 参照番号/取扱店コードとみなして不採用。
+      // 実データ検証で、偽造防止記号「★」が数字の直前で1文字の英字（x/X だけでなく
+      // Y/T/V など）に化けるケースが多く、これを一律に弾くと正規の少額（利息など）まで
+      // 空欄になってしまうため、「英字1文字だけ」は記号の誤読として許容する。
+      const hasKana = /[぀-ヿｦ-ﾟ一-鿿]/.test(letters);
+      if(hasKana || letters.replace(/[^A-Za-zＡ-Ｚａ-ｚ]/g, '').length >= 2) return '';
+    }
+
+    // 当座貸越などのマイナス残高: 最初の数字までに符号記号があれば半角ハイフンで保持する
+    const negative = AMOUNT_SIGN_RE.test(s.slice(0, firstDigit + 1));
+
+    // 最初の数字以降を「数字グループの並び」として読む。
+    // 旧実装は最初の1マッチ（[0-9][0-9,.]{2,}）だけを採用していたため、
+    //  ・「73」「7」のような1〜2桁の少額（利息など）が丸ごと落ちる（要件: 桁が欠ける）
+    //  ・OCRがカンマ位置で単語を割った「7, 430」から先頭の「7,」を取りこぼし「430」だけ残す
+    // という2つの取りこぼしが起きていた。
+    // ここでは数字トークンを順にたどり、「カンマ区切りの続き（ちょうど3桁）」だけを連結し、
+    // 完成済みの金額の後ろに離れて出る別トークン（取扱店コード等、例「1,012,259 422」）は
+    // 取り込まずに打ち切る。
+    const rest = s.slice(firstDigit);
+    const tokens = rest.match(/[0-9][0-9,.]*/g) || [];
+    if(tokens.length === 0) return '';
+
+    let acc = tokens[0].replace(/[^0-9]/g, '');
+    for(let k = 1; k < tokens.length; k++){
+      const cur = tokens[k].replace(/[^0-9]/g, '');
+      if(!cur) continue;
+      const prev = tokens[k - 1];
+      const prevEndsComma = /,\s*$/.test(prev);
+      const prevLastGroupLen = (prev.split(',').pop() || '').replace(/[^0-9]/g, '').length;
+      // 直前がカンマ止め、または直前の末尾グループが3桁未満 → 桁区切りの途中で割れたとみなす。
+      // その場合の続きトークンは「ちょうど3桁」であるべき（1,000の位区切り1つ分）。
+      const isContinuation = (prevEndsComma || prevLastGroupLen < 3) && cur.length === 3;
+      if(isContinuation) acc += cur;
+      else break;
+    }
+    if(!acc) return '';
+    // 1桁だけの結果は、金額（利息でも実質的に2桁以上）よりOCRノイズ（★や罫線の誤読で
+    // 数字1個だけ拾ったもの）である可能性が高いので採用しない。2桁以上は少額として通す。
+    if(acc.length < 2) return '';
+
+    // 末尾から3桁区切りで整形しなおす（OCRがカンマをピリオドと誤認しても吸収できる）
+    const formatted = acc.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return (negative ? '-' : '') + formatted;
+  }
+
+  // ---------------- 金額専用の第2パス（数字限定OCR） ----------------
+  // 「支払金額｜預り金額｜差引残高」の3列をまとめた帯を切り出し、文字種を数字のみに制限して
+  // 再度OCRすることで、摘要文字や透かしに引きずられた誤認識を減らす。
+  function extractWordsShifted(data, s, xOffsetScaled){
+    const words = [];
+    (data.blocks || []).forEach(block=>{
+      (block.paragraphs || []).forEach(par=>{
+        (par.lines || []).forEach(line=>{
+          (line.words || []).forEach(w=>{
+            if(!w.text || !w.text.trim()) return;
+            words.push({
+              text: w.text.trim(),
+              x: ((w.bbox.x0 + w.bbox.x1)/2 + xOffsetScaled) / s,
+              x0: (w.bbox.x0 + xOffsetScaled) / s, x1: (w.bbox.x1 + xOffsetScaled) / s,
+              y: ((w.bbox.y0 + w.bbox.y1)/2) / s,
+              y0: w.bbox.y0 / s, y1: w.bbox.y1 / s
+            });
+          });
+        });
+      });
+    });
+    return words;
+  }
+
+  // 数字限定の第2パスで切り出す帯の左端X（ページ座標系）。
+  // colRoles で金額(支払/預り/差引残高)に割り当てたバンドのうち、最も左のバンドの開始X。無ければ null。
+  function amountCropStartX(pageNaturalW){
+    const pb = boundaries.map(b => (b / naturalW) * pageNaturalW);
+    const edges = [0, ...pb];   // バンド i の開始X = edges[i]
+    let minX = null;
+    colRoles.forEach((role, i) => {
+      if((role === 'withdrawal' || role === 'deposit' || role === 'balance') && i < edges.length){
+        if(minX === null || edges[i] < minX) minX = edges[i];
+      }
+    });
+    return minX;
+  }
+
+  function buildAmountRowsFor(words, pageNaturalW){
+    if(words.length === 0) return [];
+    const pageBoundaries = boundaries.map(b => (b / naturalW) * pageNaturalW);
+    const lines = groupIntoLines(words);
+    return lines.map(line=>{
+      const b = bucketLineByRoles(line, pageBoundaries);
+      return {
+        _y: line.reduce((s,w)=>s+w.y,0)/line.length,
+        withdrawal: b.withdrawal,
+        deposit: b.deposit,
+        balance: b.balance
+      };
+    }).filter(r => r.withdrawal || r.deposit || r.balance);
+  }
+
+  // 第2パス(数字限定OCR)の値で第1パスの値を置き換えるか判定する。
+  //  ・数字限定パスが2つの別々の数字を1語に誤結合することがある（例「50,000」＋「1,026,259」）。
+  //    通帳金額が9桁を超えることはまず無いので、桁数過多は誤結合とみなし1パス側を維持。
+  //  ・数字限定パスの切り出し帯が左端で少しだけ足りず、先頭の桁グループ（例「7,430」の「7,」）を
+  //    取りこぼして「430」になることがある。旧実装はこれで正しい1パス値を上書きしていた。
+  //    片方がもう片方の「末尾一致」なら、桁数が多い方（先頭グループを含む方）を採用する。
+  //  ・末尾一致でない“別物”のときは、数字だけに絞って読み直した2パス側を信頼する（本来の目的）。
+  function pickMergedAmount(oldV, newV){
+    const MAX_DIGITS = 9;
+    const digitsOf = v => String(v == null ? '' : v).replace(/[^0-9]/g, '');
+    const nd = digitsOf(newV);
+    if(!nd || nd.length > MAX_DIGITS) return oldV;   // 2パス値が無い/桁数過多 → 1パス維持
+    const od = digitsOf(oldV);
+    if(!od) return newV;                             // 1パスが空 → 2パスで補完
+    if(od === nd) return newV;
+    if(od.endsWith(nd)) return oldV;                 // 2パスが短い末尾一致（先頭グループ欠け）→ 1パス維持
+    if(nd.endsWith(od)) return newV;                 // 2パスが長い末尾一致（1パスが欠けていた）→ 2パス採用
+    return newV;                                     // 別物 → 数字限定パスを信頼
+  }
+
+  // 第1パスの行(baseRows)に、第2パス(amountRows)で読み直した金額をY座標の近さで対応付けてマージする
+  function mergeAmountsIntoRows(baseRows, amountRows){
+    if(!baseRows || baseRows.length === 0 || amountRows.length === 0) return;
+    const ys = baseRows.map(r=>r._y).sort((a,b)=>a-b);
+    const gaps = [];
+    for(let i=1;i<ys.length;i++) gaps.push(ys[i]-ys[i-1]);
+    const tol = gaps.length ? Math.max(median(gaps) * 0.6, 10) : 20;
+
+    amountRows.forEach(ar=>{
+      let best = null, bestDist = Infinity;
+      baseRows.forEach(br=>{
+        const d = Math.abs(br._y - ar._y);
+        if(d < bestDist){ bestDist = d; best = br; }
+      });
+      if(best && bestDist <= tol){
+        best.withdrawal = pickMergedAmount(best.withdrawal, ar.withdrawal);
+        best.deposit    = pickMergedAmount(best.deposit,    ar.deposit);
+        best.balance    = pickMergedAmount(best.balance,    ar.balance);
+      }
+    });
+  }
+
+  // ---------------- STEP 4: result table（ページタブ対応） ----------------
+  function renderPageTabs(){
+    const wrap = el('pageTabs');
+    if(!wrap) return;
+    wrap.innerHTML = '';
+    if(pages.length <= 1){ wrap.style.display = 'none'; return; }
+    wrap.style.display = 'flex';
+    pages.forEach((p,i)=>{
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'page-tab' + (i===activePageIndex ? ' active':'');
+      const count = p.rows ? `（${p.rows.length}行）` : '';
+      tab.textContent = p.name + count;
+      tab.addEventListener('click', ()=>{
+        if(i === activePageIndex) return;
+        hideUndoToast(); // 別ページに移ったら削除の取り消しは確定
+        syncActivePageFromTable();
+        activePageIndex = i;
+        renderPageTabs();
+        renderActivePage();
+        scheduleSessionSave();
+      });
+      wrap.appendChild(tab);
+    });
+  }
+
+  // 現在表示中のテーブルの編集内容を pages[activePageIndex].rows に書き戻す
+  // （ページ切替やCSV出力の直前に必ず呼ぶ）
+  function syncActivePageFromTable(){
+    if(pages.length === 0 || !pages[activePageIndex]) return;
+    const domRows = [...el('resultBody').querySelectorAll('tr:not([data-placeholder])')].map(tr=>{
+      const get = f => {
+        const inp = tr.querySelector(`input[data-field="${f}"]`);
+        return inp ? inp.value : '';
+      };
+      return {
+        date: get('date'), desc: get('desc'),
+        withdrawal: get('withdrawal'), deposit: get('deposit'), balance: get('balance'),
+        acct: get('acct'),
+        lowConfidence: tr.dataset.lowConfidence === '1',
+        _descOcr: tr.dataset.descOcr !== undefined ? tr.dataset.descOcr : undefined,
+        _y0: tr.dataset.y0 !== undefined ? parseFloat(tr.dataset.y0) : undefined,
+        _y1: tr.dataset.y1 !== undefined ? parseFloat(tr.dataset.y1) : undefined
+      };
+    });
+    // 体験版では表に出ていない 11 行目以降（隠れ行）を失わないよう、後ろに繋ぎ直す。
+    const prev = pages[activePageIndex].rows || [];
+    const hiddenTail = trialTailHidden(prev) ? prev.slice(TRIAL_ROW_LIMIT) : [];
+    pages[activePageIndex].rows = domRows.concat(hiddenTail);
+  }
+
+  function renderActivePage(){
+    refreshDescVocabList();
+    refreshAcctVocabList();
+    updateDescDictNote();
+    applyCsvFormatUI();
+    applyJournalSettingsToUI();
+    const rows = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    renderResultTable(rows);
+    renderImagePreview();
+  }
+
+  function renderResultTable(fullRows){
+    const tbody = el('resultBody');
+    tbody.innerHTML = '';
+    fullRows = Array.isArray(fullRows) ? fullRows : [];
+    // 体験版では先頭 TRIAL_ROW_LIMIT 行だけを描画（OCR結果 pages[].rows は全行のまま保持）
+    const rows = limitRowsForOutput(fullRows);
+    if(rows.length === 0){
+      // 案内文は「編集可能な行」としては挿入しない。data-placeholder付きの非入力行にして
+      // syncActivePageFromTable / CSV出力の対象から必ず除外する（案内文が摘要欄に混入するのを防ぐ）。
+      const tr = document.createElement('tr');
+      tr.dataset.placeholder = '1';
+      tr.innerHTML = '<td colspan="8" style="padding:20px 12px; text-align:center; color:var(--ink-soft); font-size:12.5px; line-height:1.7;">認識結果がありません。「別の画像を読み込む」で列位置を調整して再実行するか、「＋ 行を追加」で手入力してください。</td>';
+      tbody.appendChild(tr);
+    }else{
+      rows.forEach(addRow);
+    }
+    // 先頭行の「↑」・最終行の「↓」は無効化しておく（範囲外操作は起こり得ないが明示する）
+    const dataTrs = tbody.querySelectorAll('tr:not([data-placeholder])');
+    dataTrs.forEach((tr, i) => {
+      const up = tr.querySelector('.row-tools [data-op="up"]');
+      const down = tr.querySelector('.row-tools [data-op="down"]');
+      if(up) up.disabled = (i === 0);
+      if(down) down.disabled = (i === dataTrs.length - 1);
+    });
+    // 体験版で 11 行目以降が隠れている場合、グレーアウトの案内行を 1 行だけ表末尾に足す。
+    // data-placeholder 付きなので syncActivePageFromTable / CSV 出力の対象からは除外される。
+    if(trialTailHidden(fullRows)){
+      const tr = document.createElement('tr');
+      tr.dataset.placeholder = 'trial';
+      tr.innerHTML = '<td colspan="8" style="padding:14px 12px; text-align:center; color:var(--ink-soft); background:rgba(128,128,128,0.10); font-size:12.5px; line-height:1.6; opacity:0.75;">体験版では' +
+        (TRIAL_ROW_LIMIT + 1) + '行目以降は表示されません（全行を変換できる製品版は、無料モニターの方にお渡ししています）</td>';
+      tbody.appendChild(tr);
+    }
+    recheckReconciliation();
+  }
+
+  function addRow(r){
+    r = r || {date:'',desc:'',withdrawal:'',deposit:'',balance:'',lowConfidence:false};
+    const tbody = el('resultBody');
+    // 実データ行を追加するときは案内用プレースホルダ行を取り除く
+    const ph = tbody.querySelector('tr[data-placeholder]');
+    if(ph) ph.remove();
+    const tr = document.createElement('tr');
+    tr.dataset.lowConfidence = r.lowConfidence ? '1' : '0';
+    // 元のOCR摘要を保持（手修正後も学習・候補照合に使う）
+    tr.dataset.descOcr = (r._descOcr !== undefined && r._descOcr !== null ? r._descOcr : (r.desc || '')) || '';
+    if(r._y0 !== undefined && r._y0 !== null) tr.dataset.y0 = r._y0;
+    if(r._y1 !== undefined && r._y1 !== null) tr.dataset.y1 = r._y1;
+    tr.innerHTML = `
+      <td class="row-flag"></td>
+      <td><input value="${escapeAttr(r.date)}" data-field="date"></td>
+      <td class="desc-cell"><input value="${escapeAttr(r.desc)}" data-field="desc" list="descVocabList" autocomplete="off"><div class="desc-suggest-slot"></div></td>
+      <td class="col-amount"><input value="${escapeAttr(r.withdrawal)}" data-field="withdrawal"></td>
+      <td class="col-amount"><input value="${escapeAttr(r.deposit)}" data-field="deposit"></td>
+      <td class="col-amount"><input value="${escapeAttr(r.balance)}" data-field="balance"></td>
+      <td class="col-acct desc-cell"><input value="${escapeAttr(r.acct || '')}" data-field="acct" list="acctVocabList" autocomplete="off" placeholder="相手科目"><div class="acct-suggest-slot"></div></td>
+      <td class="row-tools">
+        <button type="button" data-op="up" title="この行を上へ移動">↑</button>
+        <button type="button" data-op="down" title="この行を下へ移動">↓</button>
+        <button type="button" data-op="insert" title="この行の下に空行を挿入">＋</button>
+        <button type="button" class="del" data-op="delete" title="この行を削除">✕</button>
+      </td>
+    `;
+
+    tr.querySelector('.row-tools').addEventListener('click', ev=>{
+      const b = ev.target.closest('button');
+      if(!b) return;
+      ev.stopPropagation();
+      rowOp(tr, b.dataset.op);
+    });
+
+    // 学習辞書からの修正候補（✎チップ）。クリックで摘要を置き換える。
+    const sug = suggestDesc(tr.dataset.descOcr);
+    if(sug && sug.value.trim() && sug.value.trim() !== (r.desc || '').trim()){
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'desc-suggest';
+      chip.textContent = '候補: ' + sug.value;
+      chip.title = 'この行の摘要を「' + sug.value + '」に置き換えます（過去の手修正から学習した候補'
+        + (sug.exact ? '・完全一致' : '・類似度 ' + Math.round(sug.score * 100) + '%') + '）';
+      chip.addEventListener('click', ()=>{
+        const inp = tr.querySelector('input[data-field="desc"]');
+        inp.value = sug.value;
+        chip.remove();
+        learnDesc(tr.dataset.descOcr, sug.value); // 候補採用も学習として強化
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      tr.querySelector('.desc-suggest-slot').appendChild(chip);
+    }
+
+    // 相手勘定科目の候補（✎チップ）。仕訳形式のとき列が表示される。
+    if(currentCsvFormat() !== 'raw'){
+      const asug = suggestAcct(tr.dataset.descOcr);
+      const curAcct = (r.acct || '').trim();
+      if(asug && asug.value.trim() && asug.value.trim() !== curAcct){
+        const achip = document.createElement('button');
+        achip.type = 'button';
+        achip.className = 'acct-suggest';
+        achip.textContent = '科目候補: ' + asug.value;
+        achip.title = 'この行の相手勘定科目を「' + asug.value + '」にします（過去にこの摘要へ選んだ科目'
+          + (asug.exact ? '・完全一致' : '・類似度 ' + Math.round(asug.score * 100) + '%') + '）';
+        achip.addEventListener('click', ()=>{
+          const inp = tr.querySelector('input[data-field="acct"]');
+          inp.value = asug.value;
+          achip.remove();
+          learnAcct(tr.dataset.descOcr, asug.value);
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        tr.querySelector('.acct-suggest-slot').appendChild(achip);
+      }
+    }
+
+    tr.addEventListener('click', (ev)=>{
+      document.querySelectorAll('#resultBody tr.row-selected').forEach(x=>x.classList.remove('row-selected'));
+      tr.classList.add('row-selected');
+      // 入力セルのクリックは focusin 側でセル単位ハイライトするので、ここでは行全体を出さない
+      if(ev.target && ev.target.matches && ev.target.matches('input[data-field]')) return;
+      const y0 = tr.dataset.y0 !== undefined ? parseFloat(tr.dataset.y0) : null;
+      const y1 = tr.dataset.y1 !== undefined ? parseFloat(tr.dataset.y1) : null;
+      highlightRowInImage(y0, y1);
+    });
+    tbody.appendChild(tr);
+  }
+
+  // ---------------- 画面下のトースト（行削除の「元に戻す」／各種の完了通知） ----------------
+  let pendingUndo = null;   // { row, index, pageIndex }
+  let undoTimer = null;
+  function rowHasContent(r){
+    return !!r && ['date','desc','withdrawal','deposit','balance','acct'].some(f => String(r[f] || '').trim());
+  }
+  function showToast(msg, withUndo){
+    el('undoToastMsg').textContent = msg;
+    el('btnUndoDelete').style.display = withUndo ? '' : 'none';
+    el('undoToast').classList.add('show');
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(hideUndoToast, withUndo ? 7000 : 3000);
+  }
+  function showUndoToast(msg){ showToast(msg, true); }
+  function hideUndoToast(){
+    clearTimeout(undoTimer);
+    el('undoToast').classList.remove('show');
+    el('btnUndoDelete').style.display = '';
+    pendingUndo = null;
+  }
+  el('btnUndoDelete').addEventListener('click', ()=>{
+    if(!pendingUndo){ hideUndoToast(); return; }
+    const { row, index, pageIndex } = pendingUndo;
+    syncActivePageFromTable();
+    if(activePageIndex !== pageIndex){ hideUndoToast(); return; }
+    const rows = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    rows.splice(Math.min(Math.max(0, index), rows.length), 0, row);
+    hideUndoToast();
+    renderActivePage();
+    scheduleSessionSave();
+  });
+
+  // 行の削除・移動・挿入。DOM上の位置から現在のインデックスを求め、rows配列を編集して再描画する。
+  function rowOp(tr, op){
+    syncActivePageFromTable();
+    const rows = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    const live = [...el('resultBody').querySelectorAll('tr:not([data-placeholder])')];
+    const i = live.indexOf(tr);
+    if(i < 0) return;
+    // 直前の削除の「元に戻す」は、次の行操作で確定させる
+    hideUndoToast();
+    if(op === 'up'){
+      if(i <= 0) return;                          // 先頭行の「↑」は何もしない
+      const [x] = rows.splice(i, 1); rows.splice(i - 1, 0, x);
+    }else if(op === 'down'){
+      if(i >= rows.length - 1) return;            // 最終行の「↓」は何もしない
+      const [x] = rows.splice(i, 1); rows.splice(i + 1, 0, x);
+    }else if(op === 'insert'){
+      rows.splice(i + 1, 0, { date:'', desc:'', withdrawal:'', deposit:'', balance:'', acct:'', lowConfidence:false });
+    }else if(op === 'delete'){
+      const removed = rows.splice(i, 1)[0];
+      if(rowHasContent(removed)){
+        pendingUndo = { row: removed, index: i, pageIndex: activePageIndex };
+        showUndoToast('1行を削除しました');
+      }
+    }else{
+      return;
+    }
+    renderActivePage();
+    scheduleSessionSave();
+  }
+
+  // ---------------- Excel（TSV）との貼り付け／コピー ----------------
+  const PASTE_FIELDS = ['date','desc','withdrawal','deposit','balance','acct'];
+  const PASTE_HEADERS = ['日付','摘要','支払金額','預り金額','差引残高','勘定科目(相手)'];
+
+  // Excelからの金額セルを OCR結果と同じ「カンマ区切りの数字」に整える。¥や空白、"50"のような小額も許容。
+  function normalizePastedAmount(s){
+    const raw = String(s == null ? '' : s).trim();
+    if(!raw) return '';
+    const cleaned = raw.replace(/[^0-9-]/g, '');
+    const digits = cleaned.replace(/-/g, '');
+    if(!digits) return raw;                       // 数字が無ければ元の文字列をそのまま残す
+    const neg = /^-/.test(cleaned) || /^[▲△▽▼−－]/.test(raw);
+    return (neg ? '-' : '') + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function parseTsv(text){
+    return String(text || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\n+$/, '')
+      .split('\n')
+      .map(line => line.split('\t'));
+  }
+
+  // マトリクス（行×列）→ 行オブジェクト配列。列順は PASTE_FIELDS。
+  function matrixToRows(matrix){
+    return matrix.map(cells => {
+      const row = { date:'', desc:'', withdrawal:'', deposit:'', balance:'', acct:'', lowConfidence:false };
+      PASTE_FIELDS.forEach((f, ci) => {
+        const v = cells[ci];
+        if(v === undefined) return;
+        if(f === 'withdrawal' || f === 'deposit' || f === 'balance') row[f] = normalizePastedAmount(v);
+        else row[f] = String(v).trim();
+      });
+      row._descOcr = row.desc;   // 以後の学習・候補照合の起点にする
+      return row;
+    });
+  }
+
+  // 表のセルへの直接ペースト（複数セルのTSV）。フォーカス位置を起点に右・下へ流し込む。
+  el('resultBody').addEventListener('paste', e=>{
+    const inp = e.target;
+    const startField = inp && inp.getAttribute && inp.getAttribute('data-field');
+    if(!startField || PASTE_FIELDS.indexOf(startField) < 0) return;
+    const cd = e.clipboardData || window.clipboardData;
+    const text = cd ? cd.getData('text') : '';
+    if(!/[\t\n\r]/.test(text)) return;           // 単一セルの貼り付けはブラウザ既定に任せる
+    e.preventDefault();
+
+    syncActivePageFromTable();
+    hideUndoToast();
+    const rows = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    const tr = inp.closest('tr');
+    const startRow = [...el('resultBody').querySelectorAll('tr:not([data-placeholder])')].indexOf(tr);
+    if(startRow < 0) return;
+    const startCol = PASTE_FIELDS.indexOf(startField);
+    const showAcct = el('resultTable').classList.contains('show-acct');
+    const maxCol = showAcct ? 5 : 4;             // 表示中の最終データ列まで
+
+    const matrix = parseTsv(text);
+    matrix.forEach((cells, r) => {
+      const ri = startRow + r;
+      if(ri >= rows.length){
+        rows.push({ date:'', desc:'', withdrawal:'', deposit:'', balance:'', acct:'', lowConfidence:false });
+      }
+      const target = rows[ri];
+      cells.forEach((v, c) => {
+        const ci = startCol + c;
+        if(ci > maxCol) return;
+        const f = PASTE_FIELDS[ci];
+        if(f === 'withdrawal' || f === 'deposit' || f === 'balance') target[f] = normalizePastedAmount(v);
+        else target[f] = String(v).trim();
+      });
+    });
+    renderActivePage();
+    scheduleSessionSave();
+    // 貼り付けた起点セルにフォーカスを戻す
+    const back = [...el('resultBody').querySelectorAll('tr:not([data-placeholder])')][startRow];
+    const bi = back && back.querySelector(`input[data-field="${startField}"]`);
+    if(bi) bi.focus();
+    showToast(matrix.length + '行を貼り付けました', false);
+  });
+
+  // まとめ貼り付けパネル
+  el('btnPasteOpen').addEventListener('click', ()=>{
+    const p = el('pastePanel');
+    const opening = !p.classList.contains('show');
+    p.classList.toggle('show', opening);
+    if(opening){ el('pasteArea').value = ''; el('pasteArea').focus(); }
+  });
+  el('btnPasteCancel').addEventListener('click', ()=> el('pastePanel').classList.remove('show'));
+
+  function readPasteAreaRows(){
+    let matrix = parseTsv(el('pasteArea').value);
+    matrix = matrix.filter(cells => cells.some(v => String(v).trim() !== ''));
+    if(el('pasteHasHeader').checked && matrix.length) matrix = matrix.slice(1);
+    return matrixToRows(matrix);
+  }
+
+  el('btnPasteReplace').addEventListener('click', ()=>{
+    const newRows = readPasteAreaRows();
+    if(!newRows.length){ alert('貼り付けるデータがありません。'); return; }
+    syncActivePageFromTable();
+    const cur = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    const curHasData = cur.some(rowHasContent);
+    if(curHasData && !confirm('このページの ' + cur.length + ' 行を、貼り付けた ' + newRows.length + ' 行で置き換えます。よろしいですか？')) return;
+    hideUndoToast();
+    pages[activePageIndex].rows = newRows;
+    el('pastePanel').classList.remove('show');
+    renderActivePage();
+    scheduleSessionSave();
+    showToast(newRows.length + '行に置き換えました', false);
+  });
+
+  el('btnPasteAppend').addEventListener('click', ()=>{
+    const newRows = readPasteAreaRows();
+    if(!newRows.length){ alert('貼り付けるデータがありません。'); return; }
+    syncActivePageFromTable();
+    const rows = (pages[activePageIndex] && pages[activePageIndex].rows) || [];
+    newRows.forEach(r => rows.push(r));
+    el('pastePanel').classList.remove('show');
+    renderActivePage();
+    scheduleSessionSave();
+    showToast(newRows.length + '行を追加しました', false);
+  });
+
+  // 全行を TSV でクリップボードへ（Excelへ貼り付け用）。体験版は先頭 TRIAL_ROW_LIMIT 行のみ。
+  el('btnCopyTsv').addEventListener('click', async ()=>{
+    syncActivePageFromTable();
+    const rows = limitRowsForOutput((pages[activePageIndex] && pages[activePageIndex].rows) || []);
+    const lines = [PASTE_HEADERS.join('\t')].concat(
+      rows.map(r => PASTE_FIELDS.map(f => String(r[f] || '').replace(/[\t\r\n]/g, ' ')).join('\t'))
+    );
+    const tsv = lines.join('\r\n');
+    let ok = false;
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(tsv);
+        ok = true;
+      }
+    }catch(e){}
+    if(!ok){
+      const ta = document.createElement('textarea');
+      ta.value = tsv;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try{ ok = document.execCommand('copy'); }catch(e){}
+      document.body.removeChild(ta);
+    }
+    showToast(ok ? (rows.length + '行をコピーしました（Excelに貼り付けできます）') : 'コピーできませんでした', false);
+  });
+
+  // ---------------- 元画像プレビュー・行ハイライト ----------------
+  let previewScale = 1;
+  let previewNaturalW = 0;
+
+  function renderImagePreview(){
+    const page = pages[activePageIndex];
+    const canvas = el('previewCanvas');
+    const emptyMsg = el('imagePreviewEmpty');
+    if(!page || !canvas) return;
+    el('previewHighlight').style.display = 'none';
+    document.querySelectorAll('#resultBody tr.row-selected').forEach(x=>x.classList.remove('row-selected'));
+
+    // 画像なしで復元された作業データ（「画像を含めない」保存や自動保存からの復元）
+    if(!page.dataUrl){
+      canvas.width = 0; canvas.height = 0;
+      if(emptyMsg){
+        emptyMsg.style.display = 'block';
+        emptyMsg.textContent = 'この作業データには元画像が含まれていません。結果の確認・修正・CSV出力はそのまま行えます（照合用に画像が必要な場合は、元の画像/PDFを読み込んで再度OCRしてください）。';
+      }
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 640;
+      previewNaturalW = img.naturalWidth;
+      previewScale = Math.min(1, maxW / img.naturalWidth);
+      canvas.width = Math.round(img.naturalWidth * previewScale);
+      canvas.height = Math.round(img.naturalHeight * previewScale);
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      el('imagePreviewInner').style.width = canvas.width + 'px';
+      if(emptyMsg) emptyMsg.style.display = 'none';
+    };
+    img.onerror = () => { if(emptyMsg){ emptyMsg.style.display='block'; emptyMsg.textContent='画像の読み込みに失敗しました'; } };
+    img.src = page.dataUrl;
+  }
+
+  // data-field → キャリブレーション列の画像X範囲（プレビュー画像の元解像度基準）。acct等はnull。
+  function columnXRange(field){
+    if(!previewNaturalW || !boundaries.length) return null;
+    const pb = boundaries.map(b => (b / naturalW) * previewNaturalW);
+    const edges = [0, ...pb, previewNaturalW];   // 長さ = バンド数 + 1
+    // この役割を持つバンドの範囲（desc は複数バンドにまたがり得るので先頭〜末尾）
+    const idxs = colRoles.map((r, i) => r === field ? i : -1).filter(i => i >= 0 && i < edges.length - 1);
+    if(!idxs.length) return null;
+    return { x0: edges[idxs[0]], x1: edges[idxs[idxs.length - 1] + 1] };
+  }
+
+  function positionHighlight(y0, y1, xr){
+    const hl = el('previewHighlight');
+    const scrollBox = el('imagePreviewScroll');
+    if(!hl || !scrollBox) return;
+    if(y0 == null || y1 == null || isNaN(y0) || isNaN(y1)){
+      hl.style.display = 'none';
+      return;
+    }
+    const pad = (y1 - y0) * 0.35 + 4;
+    const top = Math.max(0, (y0 - pad) * previewScale);
+    const height = Math.max(6, (y1 - y0 + pad * 2) * previewScale);
+    hl.style.top = top + 'px';
+    hl.style.height = height + 'px';
+    if(xr){
+      const xpad = 5;
+      const left = Math.max(0, xr.x0 * previewScale - xpad);
+      hl.style.left = left + 'px';
+      hl.style.right = 'auto';
+      hl.style.width = ((xr.x1 - xr.x0) * previewScale + xpad * 2) + 'px';
+      hl.classList.add('cell');
+    }else{
+      hl.style.left = '0';
+      hl.style.right = '0';
+      hl.style.width = 'auto';
+      hl.classList.remove('cell');
+    }
+    hl.style.display = 'block';
+    const targetScroll = Math.max(0, top - scrollBox.clientHeight / 2 + height / 2);
+    scrollBox.scrollTo({ top: targetScroll, behavior: 'smooth' });
+  }
+
+  function highlightRowInImage(y0, y1){
+    positionHighlight(y0, y1, null);
+  }
+  function highlightCellInImage(y0, y1, field){
+    positionHighlight(y0, y1, columnXRange(field));
+  }
+
+  el('btnToggleImagePreview').addEventListener('click', ()=>{
+    const col = document.querySelector('.result-image-col');
+    const btn = el('btnToggleImagePreview');
+    const hidden = col.classList.toggle('hidden');
+    btn.textContent = hidden ? '表示' : '隠す';
+  });
+
+  function escapeAttr(s){
+    return (s||'').replace(/"/g,'&quot;');
+  }
+
+  function parseAmountToNumber(s){
+    if(!s) return null;
+    const str = String(s);
+    const digits = str.replace(/[^0-9]/g,'');
+    if(!digits) return null;
+    const n = parseInt(digits, 10);
+    // マイナス残高（当座貸越など）は残高整合性チェックでも符号を保持する
+    return AMOUNT_SIGN_RE.test(str) ? -n : n;
+  }
+
+  // 複数ページ（同じ通帳の続き）の場合、前ページ以前で最後に確定している残高を引き継ぐ。
+  // これが無いと、ページ1最終行とページ2先頭行の整合性チェックが途切れてしまう。
+  function getCarryInBalance(){
+    return lastKnownBalanceBefore(activePageIndex);
+  }
+  function lastKnownBalanceBefore(pageIdx){
+    for(let p = pageIdx - 1; p >= 0; p--){
+      const rows = (pages[p] && pages[p].rows) || [];
+      for(let i = rows.length - 1; i >= 0; i--){
+        const b = parseAmountToNumber(rows[i].balance);
+        if(b !== null) return b;
+      }
+    }
+    return null;
+  }
+
+  // 数値を「1,234,567」形式の文字列に戻す（符号つき）。
+  function formatAmountNumber(n){
+    const neg = n < 0;
+    return (neg ? '-' : '') + String(Math.abs(Math.trunc(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // OCR直後の後処理: 残高検算を使って「金額欄のOCRノイズ／桁膨れ」を取り除く。
+  //  ・パス1（先頭の繰越/開始残高）: carry-in が無く先頭残高が検算に合わないとき、末尾3桁または
+  //    6桁を落とすと直後の「前残高＋預り－支払＝残高」を満たす行にちょうど合致するなら、
+  //    バーコード等の数字が末尾に連結した桁膨れとみなして切り詰める（例 976,215,422→976,215）。
+  //  ・パス2（各行）: 「前残高＋預り－支払」と残高が合わないとき、
+  //     - その行の残高の末尾3桁を落とすと一致 → 残高の桁膨れとみなして切り詰め
+  //     - 支払・預りが両方入っていて片方を空にすると一致 → その片方を誤認識として空欄化
+  //       （通帳の1行は入金か出金のどちらか一方だけ）
+  //     - 片側だけの3桁以下の少額で、空にすると一致 → 空欄化
+  //  いずれも「切り詰め／空欄化するとちょうど一致」した時しか触らないので、正しい行を壊す可能性は低い。
+  function scrubReconciliationNoise(rows, carryIn){
+    if(!Array.isArray(rows) || rows.length === 0) return;
+
+    // --- パス1: 先頭残高の桁膨れ補正 ---
+    if(typeof carryIn !== 'number'){
+      const fi = rows.findIndex(r => parseAmountToNumber(r.balance) !== null);
+      if(fi >= 0){
+        const b0 = parseAmountToNumber(rows[fi].balance);
+        let net = 0, target = null;
+        for(let j = fi + 1; j < rows.length; j++){
+          net += (parseAmountToNumber(rows[j].deposit) || 0) - (parseAmountToNumber(rows[j].withdrawal) || 0);
+          const bj = parseAmountToNumber(rows[j].balance);
+          if(bj !== null){ target = bj; break; }
+        }
+        if(target !== null && b0 !== null && b0 !== target - net){
+          for(const cut of [1000, 1000000]){
+            if(Math.trunc(b0 / cut) === target - net){
+              rows[fi].balance = formatAmountNumber(target - net);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // --- パス2: 各行の桁膨れ／ノイズ補正 ---
+    let prev = (typeof carryIn === 'number') ? carryIn : null;
+    for(const r of rows){
+      const w = parseAmountToNumber(r.withdrawal);
+      const d = parseAmountToNumber(r.deposit);
+      let b = parseAmountToNumber(r.balance);
+      if(prev !== null && b !== null){
+        const expected = prev + (d || 0) - (w || 0);
+        if(expected !== b){
+          const wDigits = String(r.withdrawal || '').replace(/[^0-9]/g, '').length;
+          const dDigits = String(r.deposit || '').replace(/[^0-9]/g, '').length;
+          if(Math.trunc(b / 1000) === expected){
+            r.balance = formatAmountNumber(expected);   // 残高の末尾3桁が余分
+            b = expected;
+          }else if(w !== null && d !== null && prev + d === b){
+            r.withdrawal = '';                          // 両側入り: 支払がノイズ
+          }else if(w !== null && d !== null && prev - w === b){
+            r.deposit = '';                            // 両側入り: 預りがノイズ
+          }else if(w !== null && d === null && wDigits <= 3 && prev === b){
+            r.withdrawal = '';                          // 片側(支払)少額のノイズ
+          }else if(d !== null && w === null && dDigits <= 3 && prev === b){
+            r.deposit = '';                            // 片側(預り)少額のノイズ
+          }
+        }
+      }
+      if(b !== null) prev = b;
+    }
+  }
+
+  // 「前行の残高 ＋ 今回の預り金額 － 今回の支払金額 ＝ 今回の残高」の検算。
+  // 合わない行は赤、OCR自信度が低い行は黄で左端にマークする。
+  function recheckReconciliation(){
+    const rows = [...el('resultBody').querySelectorAll('tr')];
+    let prevBalance = getCarryInBalance();
+    rows.forEach(tr=>{
+      const get = f => {
+        const input = tr.querySelector(`input[data-field="${f}"]`);
+        return input ? input.value : '';
+      };
+      const withdrawal = parseAmountToNumber(get('withdrawal'));
+      const deposit = parseAmountToNumber(get('deposit'));
+      const balance = parseAmountToNumber(get('balance'));
+      const flagCell = tr.querySelector('.row-flag');
+      if(!flagCell) return;
+
+      let mismatch = false;
+      if(prevBalance !== null && balance !== null){
+        const expected = prevBalance + (deposit||0) - (withdrawal||0);
+        if(expected !== balance) mismatch = true;
+      }
+
+      flagCell.classList.remove('low','mismatch');
+      if(mismatch){
+        flagCell.classList.add('mismatch');
+        flagCell.title = '前行の残高との計算が合いません（前残高＋預り－支払 ≠ 今回残高）。OCR誤認識の可能性があります。';
+      }else if(tr.dataset.lowConfidence === '1'){
+        flagCell.classList.add('low');
+        flagCell.title = 'この行はOCRの自信度が低いです。目視確認を推奨します。';
+      }else{
+        flagCell.removeAttribute('title');
+      }
+
+      if(balance !== null) prevBalance = balance;
+    });
+  }
+
+  el('btnAddRow').addEventListener('click', ()=>{ addRow(); recheckReconciliation(); syncActivePageFromTable(); scheduleSessionSave(); });
+  // 「整合性を再チェック」は表示専用: 左端の色マーク（赤=検算不一致 / 黄=低信頼）を計算し直すだけで、
+  // セルの値には一切手を触れない。取りこぼし防止に、保留中の自動保存(400msデバウンス)をここで確定し、
+  // 現在の表内容をモデルへ書き戻してから再判定する（＝この操作でデータがずれることは無い）。
+  el('btnRecheck').addEventListener('click', ()=>{
+    clearTimeout(window.__reconTimer);
+    syncActivePageFromTable();
+    recheckReconciliation();
+    scheduleSessionSave();
+  });
+
+  // 出力形式を切り替えたら 相手科目列・設定バー・既定文字コードを更新し、候補チップを出し直す
+  el('csvFormat').addEventListener('change', ()=>{
+    applyCsvFormatUI();
+    if(el('panelResult').style.display !== 'none'){
+      syncActivePageFromTable(); // 入力済みの相手科目などを失わないよう先に退避
+      renderActivePage();
+    }
+  });
+  // 仕訳の口座科目などの設定はプロファイル単位で保存する
+  ['jsAccountName','jsSubAccount','jsDefaultCounter','jsDefaultTax'].forEach(id=>{
+    el(id).addEventListener('input', saveJournalSettings);
+  });
+  el('resultBody').addEventListener('input', ()=>{
+    clearTimeout(window.__reconTimer);
+    window.__reconTimer = setTimeout(()=>{ recheckReconciliation(); syncActivePageFromTable(); scheduleSessionSave(); }, 400);
+  });
+  // セルにフォーカスが入ったら、元画像の該当セル（列×行）だけをハイライトする
+  el('resultBody').addEventListener('focusin', e=>{
+    const inp = e.target;
+    const field = inp && inp.getAttribute && inp.getAttribute('data-field');
+    if(!field) return;
+    const tr = inp.closest('tr');
+    if(!tr) return;
+    document.querySelectorAll('#resultBody tr.row-selected').forEach(x=>x.classList.remove('row-selected'));
+    tr.classList.add('row-selected');
+    const y0 = tr.dataset.y0 !== undefined ? parseFloat(tr.dataset.y0) : null;
+    const y1 = tr.dataset.y1 !== undefined ? parseFloat(tr.dataset.y1) : null;
+    highlightCellInImage(y0, y1, field);
+  });
+  // 摘要／相手勘定科目セルからフォーカスが外れた時点で学習する
+  el('resultBody').addEventListener('focusout', e=>{
+    const inp = e.target;
+    const field = inp && inp.getAttribute('data-field');
+    if(field !== 'desc' && field !== 'acct') return;
+    const tr = inp.closest('tr');
+    if(!tr || tr.dataset.descOcr === undefined) return;
+    const val = (inp.value || '').trim();
+    if(field === 'desc'){
+      if(val && val !== (tr.dataset.descOcr || '').trim()){
+        learnDesc(tr.dataset.descOcr, val);
+        refreshDescVocabList();
+        updateDescDictNote();
+      }
+    }else{ // acct
+      if(val){
+        learnAcct(tr.dataset.descOcr, val);
+        refreshAcctVocabList();
+      }
+    }
+  });
+
+  el('btnBackToUpload').addEventListener('click', ()=>{
+    syncActivePageFromTable();
+    const hasData = pages.some(p => (p.rows || []).length > 0);
+    if(hasData){
+      saveSessionToStorage(); // 誤操作でも復元できるよう、離れる前に自動保存を更新
+      if(!confirm('現在のOCR結果・修正内容は、この画面を離れると表示から消えます。\n（この端末には自動保存されており、STEP1の「前回の作業を復元」から戻せます。別端末へ移す場合は先に「作業を保存(JSON)」を実行してください。）\n\n別の画像の読み込みに進みますか？')) return;
+    }
+    hideUndoToast();
+    pages = [];
+    activePageIndex = 0;
+    setRail(1); showPanel('Upload');
+  });
+
+  // 仕訳CSVの各セルは「カンマ・引用符・改行を含むときだけ」引用符で囲む
+  // （弥生の受け入れ形式は数値まわりの引用符を嫌うことがあるため最小限にする）
+  function csvCell(v){
+    v = (v === undefined || v === null) ? '' : String(v);
+    return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
+  }
+  function csvLines(rows){ return rows.map(r => r.map(csvCell).join(',')).join('\r\n'); }
+
+  // 通帳の各行 → 仕訳1行（1取引=1行のシンプルな仕訳）。金額の無い行（繰越等）は除外。
+  function buildJournalEntries(){
+    const s = readJournalSettingsFromUI();
+    const acctName = s.accountName || '普通預金';
+    const sub = s.subAccount || '';
+    const defCounter = s.defaultCounter || '';
+    const tax = s.defaultTax || '対象外';
+    const out = []; let skipped = 0;
+    // 体験版では先頭 TRIAL_ROW_LIMIT 行のみを仕訳化する
+    collectOutputRows().forEach(r => {
+      const dep = parseAmountToNumber(r.deposit);
+      const wd  = parseAmountToNumber(r.withdrawal);
+      let amount = null, inflow = false;
+      if(dep && dep !== 0){ amount = Math.abs(dep); inflow = true; }
+      else if(wd && wd !== 0){ amount = Math.abs(wd); inflow = false; }
+      if(amount == null){ skipped++; return; }
+      const counter = (r.acct && r.acct.trim()) || defCounter;
+      if(r.acct && r.acct.trim() && r._descOcr !== undefined) learnAcct(r._descOcr, r.acct.trim());
+      const date = toJournalDate(r.date);
+      const tekiyo = r.desc || '';
+      if(inflow){ // 入金: 借方=口座科目 / 貸方=相手科目
+        out.push({ date, drAcct: acctName, drSub: sub, crAcct: counter, crSub: '', amount, tekiyo, tax });
+      }else{      // 出金: 借方=相手科目 / 貸方=口座科目
+        out.push({ date, drAcct: counter, drSub: '', crAcct: acctName, crSub: sub, amount, tekiyo, tax });
+      }
+    });
+    return { entries: out, skipped };
+  }
+
+  function serializeJournal(fmt, entries){
+    if(fmt === 'yayoi'){
+      // 弥生会計 インポート形式（25列・ヘッダー行なし）。先頭は直接仕訳入力を表す "2000"。
+      // タイプ=0 / 付箋1,2=0 / 調整="no"。借方税金額・貸方税金額は 0。
+      return csvLines(entries.map(e => ([
+        '2000', '', '', e.date,
+        e.drAcct, e.drSub, '', e.tax, e.amount, '0',
+        e.crAcct, e.crSub, '', e.tax, e.amount, '0',
+        e.tekiyo, '', '', '0', '', '', '0', '0', 'no'
+      ])));
+    }
+    if(fmt === 'freee'){
+      // freee 仕訳（振替形式）。伝票番号は必須（半角数字20文字以内）＝連番を採番。
+      const head = ['伝票番号','発生日','借方勘定科目','借方金額','借方税区分','貸方勘定科目','貸方金額','貸方税区分','摘要'];
+      return csvLines([head].concat(entries.map((e,i) => ([
+        String(i + 1), e.date, e.drAcct, e.amount, e.tax, e.crAcct, e.amount, e.tax, e.tekiyo
+      ]))));
+    }
+    if(fmt === 'mfc'){
+      // マネーフォワード クラウド 仕訳帳（A〜AA の27列固定・ヘッダー行必須・並び変更不可）
+      const head = ['取引No','取引日','借方勘定科目','借方補助科目','借方部門','借方取引先','借方税区分','借方インボイス','借方金額(円)','借方税額',
+        '貸方勘定科目','貸方補助科目','貸方部門','貸方取引先','貸方税区分','貸方インボイス','貸方金額(円)','貸方税額',
+        '摘要','仕訳メモ','タグ','MF仕訳タイプ','決算整理仕訳','作成日時','作成者','最終更新日時','最終更新者'];
+      return csvLines([head].concat(entries.map((e,i) => ([
+        String(i + 1), e.date, e.drAcct, e.drSub, '', '', e.tax, '', e.amount, '0',
+        e.crAcct, e.crSub, '', '', e.tax, '', e.amount, '0',
+        e.tekiyo, '', '', '', '', '', '', '', ''
+      ]))));
+    }
+    // generic: 汎用 仕訳（借方/貸方）
+    const head = ['日付','借方科目','借方金額','貸方科目','貸方金額','摘要'];
+    return csvLines([head].concat(entries.map(e => ([
+      e.date, e.drAcct, e.amount, e.crAcct, e.amount, e.tekiyo
+    ]))));
+  }
+
+  el('btnDownloadCsv').addEventListener('click', ()=>{
+    syncActivePageFromTable();
+    const fmt = currentCsvFormat();
+    // 体験版では先頭 TRIAL_ROW_LIMIT 行のみ出力（collectOutputRows が制限を反映）
+    const allRows = collectOutputRows();
+
+    // CSV出力は「確定」の区切り。全ページの摘要の手修正をまとめて学習しておく。
+    allRows.forEach(r => {
+      if(r && r.desc && r._descOcr !== undefined) learnDesc(r._descOcr, r.desc);
+    });
+
+    let csv, fname;
+    if(fmt === 'raw'){
+      const rows = allRows.map(r => [r.date, r.desc, r.withdrawal, r.deposit, r.balance]);
+      const header = ['日付','摘要','支払金額','預り金額','差引残高'];
+      csv = [header, ...rows].map(r =>
+        r.map(v => `"${(v||'').replace(/"/g,'""')}"`).join(',')
+      ).join('\r\n');
+      fname = '通帳仕訳データ.csv';
+    }else{
+      const res = buildJournalEntries();
+      if(res.entries.length === 0){
+        alert('仕訳にできる行（入金または出金の金額がある行）がありませんでした。');
+        return;
+      }
+      csv = serializeJournal(fmt, res.entries);
+      const label = { yayoi:'弥生', freee:'freee', mfc:'MFクラウド', generic:'汎用' }[fmt] || fmt;
+      fname = label + '_仕訳_' + new Date().toISOString().slice(0,10) + '.csv';
+      if(res.skipped > 0){
+        setTimeout(()=> alert('金額の無い ' + res.skipped + ' 行（繰越など）は仕訳から除外しました。'), 0);
+      }
+    }
+    refreshDescVocabList();
+    refreshAcctVocabList();
+    updateDescDictNote();
+
+    const encoding = el('csvEncoding') ? el('csvEncoding').value : 'utf8';
+    let blob;
+    if(encoding === 'sjis' && window.Encoding){
+      // 弥生など、UTF-8非対応の古い会計ソフト向け（ローカルのencoding-japaneseライブラリで変換、外部通信なし）
+      const unicodeArray = Encoding.stringToCode(csv);
+      const sjisArray = Encoding.convert(unicodeArray, {to:'SJIS', from:'UNICODE'});
+      blob = new Blob([new Uint8Array(sjisArray)], {type:'text/csv'});
+    }else if(fmt === 'raw'){
+      // raw (tsuchou transcription) CSV: BOM'd UTF-8 for Excel viewing
+      blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8;'});
+    }else{
+      // journal-import CSV: no BOM (avoids breaking MF's exact-header requirement etc.)
+      blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    a.click();
+    URL.revokeObjectURL(url);
+    saveSessionToStorage();
+    showPostCsvNotice();
+  });
+
+  // 作業状態を JSON ファイルに書き出す（「画像も含める」チェックで元画像dataURLも保存）
+  el('btnSaveSession').addEventListener('click', ()=>{
+    syncActivePageFromTable();
+    if(!pages.length){ alert('保存する作業がありません。'); return; }
+    const includeImages = !!(el('chkSessionImages') && el('chkSessionImages').checked);
+    const session = buildSession(includeImages);
+    let json;
+    try{ json = JSON.stringify(session); }
+    catch(e){ alert('作業データの書き出しに失敗しました: ' + e.message); return; }
+    const sizeMB = json.length / (1024 * 1024);
+    if(includeImages && sizeMB > 40 &&
+       !confirm('画像を含めたため、ファイルサイズが約 ' + sizeMB.toFixed(0) + ' MB になります。このまま保存しますか？\n（「画像も含める」のチェックを外すと数十KB程度に収まります）')){
+      return;
+    }
+    const blob = new Blob([json], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+    a.href = url;
+    a.download = '通帳OCR作業_' + stamp + (includeImages ? '_画像あり' : '') + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    saveSessionToStorage();
+  });
+
+  // ---------------- Built-in sample generator (no server needed) ----------------
+  function makeSampleDataUrl(){
+    const c = document.createElement('canvas');
+    c.width = 1200; c.height = 560;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0,0,c.width,c.height);
+    g.fillStyle = '#000';
+    g.font = '600 26px "Yu Gothic UI","Meiryo",sans-serif';
+    const headers = ['年月日','お取り扱い内容','お支払金額','お預り金額','差引残高'];
+    const colX = [40,220,620,820,1020];
+    headers.forEach((h,i)=>g.fillText(h, colX[i], 40));
+    g.strokeStyle = '#000'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(30,60); g.lineTo(1170,60); g.stroke();
+
+    g.font = '400 24px "Yu Gothic UI","Meiryo",sans-serif';
+    const rows = [
+      ['6.03.01','振込 ｶ)ﾔﾏﾀﾞｼｮｳｶｲ','','150,000','1,203,450'],
+      ['6.03.05','口座振替 東京電力','8,540','','1,194,910'],
+      ['6.03.10','ATM引出','50,000','','1,144,910'],
+      ['6.03.15','給与振込 ｶ)ｽｽﾞｷｼｮｳｼﾞ','','320,000','1,464,910'],
+      ['6.03.18','振込 手数料込 ｵｵﾀｹﾝｾﾂ','128,000','','1,336,910'],
+    ];
+    let y = 100;
+    rows.forEach(row=>{
+      row.forEach((val,i)=>g.fillText(val, colX[i], y));
+      g.strokeStyle = '#ddd'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(30,y+14); g.lineTo(1170,y+14); g.stroke();
+      y += 58;
+    });
+    return c.toDataURL('image/png');
+  }
+
+})();
+</script>
+</body>
+</html>
