@@ -34,7 +34,7 @@
     font-family: -apple-system, "Yu Gothic UI", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
     line-height:1.7;
   }
-  .wrap{ max-width:980px; margin:0 auto; padding:48px 24px 96px; }
+  .wrap{ max-width:1240px; margin:0 auto; padding:48px 24px 96px; }
 
   /* ---------- Header : hanko / ledger seal motif ---------- */
   header{
@@ -179,7 +179,10 @@
   table.result{ width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
 
   .result-layout{ display:flex; gap:20px; align-items:flex-start; }
-  .result-table-col{ flex:1 1 auto; min-width:0; }
+  .result-table-col{ flex:1 1 auto; min-width:0; overflow-x:auto; }
+  /* 摘要が読めないほど細くならないように（はみ出す分は横にスクロール） */
+  table.result td.desc-cell input[data-field="desc"]{ min-width:190px; }
+  table.result{ min-width:780px; }
   .result-image-col{
     flex:0 0 340px; position:sticky; top:16px;
     border:1px solid var(--line); border-radius:var(--radius); background:var(--paper-raised);
@@ -267,6 +270,8 @@
 
   /* ---------- 摘要 学習辞書: 候補チップ / 説明バー ---------- */
   .desc-cell{ position:relative; }
+  .desc-cell.suspect input[data-field="desc"]{ background:#fff3c4; box-shadow:inset 0 0 0 1px #e0b94a; }
+  .desc-cell.refixed input[data-field="desc"]{ background:#e8f1fb; box-shadow:inset 0 0 0 1px #9dbde0; }
   .desc-suggest-slot{ display:block; }
   .desc-suggest{
     display:inline-block; max-width:100%;
@@ -442,7 +447,7 @@
   <!-- STEP 4: result -->
   <div class="panel" id="panelResult" style="display:none;">
     <h2>STEP 4 <span class="tag">結果確認・修正</span></h2>
-    <p class="help">OCR結果です。誤認識箇所はクリックして直接修正できます。<strong>セルをクリックすると、右の元画像で該当セル（列×行）だけがハイライトされます</strong>（行の余白をクリックすると行全体）。右端の「行操作」で行の上下移動・挿入・削除ができます（OCRが行を誤結合・誤分割したときの修正に）。<strong>Excelでコピーした複数セルは、貼り付けたいセルに直接 Ctrl+V でまとめて流し込めます</strong>（「Excelから貼り付け」ボタンからも一括置換・追加が可能）。左端のマークは要確認行です（黄=OCR自信度が低い／赤=前後の残高と計算が合わない）。複数ページの場合はタブで切り替えられます。CSVは全ページ分をまとめて1ファイルに出力します。<strong>手修正した摘要は選択中のプロファイルに記憶され、次回以降おなじ通帳では似た行に候補ボタン（✎）が表示されます。</strong>「CSVをダウンロード」の左のプルダウンで、弥生会計・freee・マネーフォワードクラウド向けの<strong>仕訳インポート用CSV</strong>としても出力できます（相手勘定科目は「勘定科目(相手)」列で指定）。</p>
+    <p class="help">OCR結果です。誤認識箇所はクリックして直接修正できます。<strong>セルをクリックすると、右の元画像で該当セル（列×行）だけがハイライトされます</strong>（行の余白をクリックすると行全体）。右端の「行操作」で行の上下移動・挿入・削除ができます（OCRが行を誤結合・誤分割したときの修正に）。<strong>Excelでコピーした複数セルは、貼り付けたいセルに直接 Ctrl+V でまとめて流し込めます</strong>（「Excelから貼り付け」ボタンからも一括置換・追加が可能）。左端のマークは要確認行です（黄=OCR自信度が低い／赤=前後の残高と計算が合わない）。<strong>摘要のマスが黄色のときは、文字の読み違いの可能性があります。水色は、半角カナを自動で読み直したマスです</strong>（どちらも直すと色が消え、次回からは候補として出ます）。複数ページの場合はタブで切り替えられます。CSVは全ページ分をまとめて1ファイルに出力します。<strong>手修正した摘要は選択中のプロファイルに記憶され、次回以降おなじ通帳では似た行に候補ボタン（✎）が表示されます。</strong>「CSVをダウンロード」の左のプルダウンで、弥生会計・freee・マネーフォワードクラウド向けの<strong>仕訳インポート用CSV</strong>としても出力できます（相手勘定科目は「勘定科目(相手)」列で指定）。</p>
     <div class="page-tabs" id="pageTabs" style="display:none;"></div>
     <div class="desc-dict-note" id="descDictNote"></div>
     <datalist id="descVocabList"></datalist>
@@ -1003,6 +1008,9 @@
             withdrawal: r.withdrawal || '', deposit: r.deposit || '', balance: r.balance || '',
             acct: r.acct || '',
             lowConfidence: !!r.lowConfidence,
+            _descConf: (typeof r._descConf === 'number') ? r._descConf : null,
+            _descChecked: !!r._descChecked,
+            _descFixed: !!r._descFixed,
             _y0: (r._y0 !== undefined && r._y0 !== null) ? r._y0 : undefined,
             _y1: (r._y1 !== undefined && r._y1 !== null) ? r._y1 : undefined
           }))
@@ -1686,6 +1694,7 @@
         }
       });
 
+      let kanaWorker = null;
       for(let i=0;i<pages.length;i++){
         statusEl.textContent = `OCR実行中... ${i+1}/${pages.length}ページ目（${pages[i].name}）`;
         bar.style.width = Math.round((i/pages.length)*100) + '%';
@@ -1739,6 +1748,22 @@
           }
         }
 
+        // ---- 第3パス: 読み違いが疑われる摘要の半角カナを、横に引き伸ばした画像で読み直す ----
+        if(calibReady()){
+          try{
+            statusEl.textContent = `OCR実行中... ${i+1}/${pages.length}ページ目（摘要の半角カナを読み直し）`;
+            if(!kanaWorker){
+              kanaWorker = await Tesseract.createWorker('jpn', 1, {
+                workerPath: './lib/worker.min.js', corePath: './lib/tesseract-core.wasm.js', langPath: './lang-data', gzip: true
+              });
+              await kanaWorker.setParameters({ tessedit_pageseg_mode: '7' }); // 1行として読む
+            }
+            await fixHalfwidthKanaPass(kanaWorker, pageImg, pages[i].rows);
+          }catch(kanaErr){
+            console.error('摘要の読み直しでエラー:', kanaErr);
+          }
+        }
+
         // 残高検算で「消すとちょうど一致する」金額欄のOCRノイズを除去する（前ページからの残高も引き継ぐ）
         scrubReconciliationNoise(pages[i].rows, lastKnownBalanceBefore(i));
 
@@ -1746,6 +1771,7 @@
       }
 
       await worker.terminate();
+      if(kanaWorker){ try{ await kanaWorker.terminate(); }catch(e){} }
 
       activePageIndex = 0;
       renderPageTabs();
@@ -1810,7 +1836,8 @@
               x: ((w.bbox.x0 + w.bbox.x1)/2) / s,
               x0: w.bbox.x0 / s, x1: w.bbox.x1 / s,
               y: ((w.bbox.y0 + w.bbox.y1)/2) / s,
-              y0: w.bbox.y0 / s, y1: w.bbox.y1 / s
+              y0: w.bbox.y0 / s, y1: w.bbox.y1 / s,
+              conf: (typeof w.confidence === 'number') ? w.confidence : null
             });
           });
         });
@@ -1831,6 +1858,143 @@
   // これにより「1,021,」+「259」→「1,021,259」(連結)、
   // 「1,012,259」+「422」(取扱店コード、離れている)→「1,012,259 422」(区切り、正規表現が先頭だけ拾う)
   // の両方を正しく扱える。
+  // ---------------- 摘要の読み違い対策 ----------------
+  // 摘要は通常、カナ・漢字・空白でできている。カナと英字・数字・記号が1語の中で混ざるのは、
+  // ほとんどがOCRの読み違い（例: ｶ)ﾔﾏﾀﾞ → YYダ）。ただし ATM・NTT のような英字の略語は正しい。
+  const DESC_ODD_SYMBOL_RE = /[<>?!|~^`;"_=#$%&@{}\[\]\\＜＞？！｜〜＾＿＝＃＄％＆＠｛｝［］＼]/;
+  const KANA_RE = /[ァ-ヶｦ-ﾟぁ-ゖ]/;
+  const LATIN_RE = /[A-Za-zＡ-Ｚａ-ｚ]/;
+  const DESC_ACRONYM_RE = /(ATM|NTT|JCB|ETC|KDDI|VISA|NHK|SMBC|MUFG|UFJ|GMO|AEON|PAYPAY|IB|CD|EB|JA|JR|AU|DC)/gi;
+  const DESC_LOW_CONF = 60;
+  // 通帳の摘要によく出る漢字の語（読み直しで消さないようにする）
+  const DESC_KANJI_VOCAB_RE = /^(振込|振替|口座|給与|賞与|手数料|手数|振込料|料|込|引出|引落|預入|入金|出金|利息|税|国税|地方税|住民税|定期|自動|返済|年金|保険料|保険|電気|電話|水道|家賃|現金|配当|繰越|合計|記帳|通帳|総合|普通|当座|貯蓄|解約|積立)+$/;
+  function descSuspicion(text, conf){
+    const t = (text || '').trim();
+    if(!t) return '';
+    if(DESC_ODD_SYMBOL_RE.test(t)) return '摘要に、通帳ではふつう使われない記号があります。読み違いの可能性があります。';
+    for(const tok of t.split(/\s+/)){
+      if(!KANA_RE.test(tok)) continue;
+      if(LATIN_RE.test(tok.replace(DESC_ACRONYM_RE, ''))) return '摘要の中で、カナと英字が混ざっています。読み違いの可能性があります。';
+      if(/[ァ-ヶｦ-ﾟ][0-9０-９]+[ァ-ヶｦ-ﾟ]/.test(tok)) return '摘要のカナの間に数字が入っています。読み違いの可能性があります。';
+    }
+    if(typeof conf === 'number' && conf < DESC_LOW_CONF && KANA_RE.test(t)) return '摘要の読み取りの自信が低いです。目視で確認してください。';
+    return '';
+  }
+
+  // 全角カタカナ → 半角カタカナ（通帳の印字に合わせる）。濁点に読まれやすい " ” ~ も濁点に直す。
+  const H_KANA = {'ア':'ｱ','イ':'ｲ','ウ':'ｳ','エ':'ｴ','オ':'ｵ','カ':'ｶ','キ':'ｷ','ク':'ｸ','ケ':'ｹ','コ':'ｺ','サ':'ｻ','シ':'ｼ','ス':'ｽ','セ':'ｾ','ソ':'ｿ',
+    'タ':'ﾀ','チ':'ﾁ','ツ':'ﾂ','テ':'ﾃ','ト':'ﾄ','ナ':'ﾅ','ニ':'ﾆ','ヌ':'ﾇ','ネ':'ﾈ','ノ':'ﾉ','ハ':'ﾊ','ヒ':'ﾋ','フ':'ﾌ','ヘ':'ﾍ','ホ':'ﾎ',
+    'マ':'ﾏ','ミ':'ﾐ','ム':'ﾑ','メ':'ﾒ','モ':'ﾓ','ヤ':'ﾔ','ユ':'ﾕ','ヨ':'ﾖ','ラ':'ﾗ','リ':'ﾘ','ル':'ﾙ','レ':'ﾚ','ロ':'ﾛ','ワ':'ﾜ','ヲ':'ｦ','ン':'ﾝ',
+    'ァ':'ｧ','ィ':'ｨ','ゥ':'ｩ','ェ':'ｪ','ォ':'ｫ','ャ':'ｬ','ュ':'ｭ','ョ':'ｮ','ッ':'ｯ','ー':'ｰ','・':'･','（':'(','）':')','゛':'ﾞ','゜':'ﾟ'};
+  const DAKU = 'ガギグゲゴザジズゼゾダヂヅデドバビブベボヴ', DAKU_B = 'カキクケコサシスセソタチツテトハヒフヘホウ';
+  const HANDAKU = 'パピプペポ', HANDAKU_B = 'ハヒフヘホ';
+  function toHalfKana(str){
+    let out = '';
+    for(const ch of str){
+      let k = DAKU.indexOf(ch);
+      if(k >= 0){ out += H_KANA[DAKU_B[k]] + 'ﾞ'; continue; }
+      k = HANDAKU.indexOf(ch);
+      if(k >= 0){ out += H_KANA[HANDAKU_B[k]] + 'ﾟ'; continue; }
+      if(H_KANA[ch]){ out += H_KANA[ch]; continue; }
+      if(/["”“″〃~〜]/.test(ch)){ if(/[ｦ-ﾝ]$/.test(out)) out += 'ﾞ'; continue; }
+      if(/[°º˚]/.test(ch)){ if(/[ｦ-ﾝ]$/.test(out)) out += 'ﾟ'; continue; }
+      out += ch;
+    }
+    return out;
+  }
+  function kanaRatio(str){
+    const chars = [...str].filter(c=>!/\s/.test(c));
+    if(!chars.length) return 0;
+    return chars.filter(c=>/[ァ-ヶーｦ-ﾟ]/.test(c)).length / chars.length;
+  }
+
+  // 半角カナは字幅が細く、OCRが別の字や記号に読みやすい。摘要の帯を「横だけ2倍」に引き伸ばすと
+  // 全角カナと同じ形になって正しく読めることが多いので、その結果でカナ部分だけを置き換える。
+  // 漢字は引き伸ばすと崩れるため、元の読み取りをそのまま残す。
+  async function fixHalfwidthKanaPass(kw, pageImg, rows){
+    if(!rows || !rows.length) return;
+    const W = pageImg.naturalWidth;
+    const pb = boundaries.map(b => (b / naturalW) * W);
+    const edges = [0, ...pb, W];
+    const descIdx = []; colRoles.forEach((r,i)=>{ if(r === 'desc') descIdx.push(i); });
+    if(!descIdx.length) return;
+    const bandX0 = Math.max(0, edges[Math.min(...descIdx)] - 4);
+    const bandX1 = Math.min(W, edges[Math.max(...descIdx) + 1] + 4);
+    const bandW = bandX1 - bandX0;
+    if(bandW < 10) return;
+
+    for(const r of rows){
+      if(!r.desc || r._descMerged || r._y0 == null || r._y1 == null) continue;
+      if(!descSuspicion(r.desc, r._descConf)) continue;
+      const th = Math.max(6, r._y1 - r._y0);
+      const padY = th * 0.35;
+      const y0 = Math.max(0, r._y0 - padY), y1 = Math.min(pageImg.naturalHeight, r._y1 + padY);
+      let sy = Math.min(4, Math.max(1, 72 / th));
+      let sx = sy * 2;
+      if(bandW * sx > 6000){ sx = 6000 / bandW; sy = sx / 2; }
+      const PAD = 20;
+      const c = document.createElement('canvas');
+      c.width = Math.round(bandW * sx) + PAD * 2;
+      c.height = Math.round((y1 - y0) * sy) + PAD * 2;
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+      g.drawImage(pageImg, bandX0, y0, bandW, y1 - y0, PAD, PAD, bandW * sx, (y1 - y0) * sy);
+      const { data } = await kw.recognize(c, {}, { blocks: true });
+      // 文字単位で「カナらしい文字」の連なりを拾う（単語の区切りはあてにならないため）
+      const syms = [];
+      (data.blocks || []).forEach(b=>(b.paragraphs||[]).forEach(pp=>(pp.lines||[]).forEach(ln=>(ln.words||[]).forEach(w=>{
+        const list = (w.symbols && w.symbols.length) ? w.symbols : [{ text: w.text, bbox: w.bbox, confidence: w.confidence }];
+        list.forEach(sy=>{ if(sy && sy.text && sy.text.trim()) syms.push({ t: sy.text.trim(), x0: sy.bbox.x0, x1: sy.bbox.x1, c: sy.confidence }); });
+      }))));
+      syms.sort((a,b)=>a.x0-b.x0);
+      // 通帳でよく使う漢字の語（振込・口座 など）は、引き伸ばすとカナに見えることがある（口→コ）ので守る。
+      // 守る語の上に重なった文字は、カナの候補に入れない。
+      const keep = (r._descWords || []).filter(w=>DESC_KANJI_VOCAB_RE.test(w.text) || (/^[\u4e00-\u9fff々]+$/.test(w.text) && typeof w.conf === 'number' && w.conf >= 90));
+      const inKeep = sy=>{ const cx = bandX0 + ((sy.x0 + sy.x1) / 2 - PAD) / sx; return keep.some(w=>cx >= w.x0 - 1 && cx <= w.x1 + 1); };
+      const isKanaSym = t => /^[ァ-ヶーｦ-ﾟ]+$/.test(t);
+      const isMarkSym = t => /^["”“″〃~〜°º˚゛゜()（）・･]+$/.test(t);
+      const runs = []; let cur = null;
+      syms.forEach(sy=>{
+        const ok = !inKeep(sy) && (isKanaSym(sy.t) || (cur && isMarkSym(sy.t)));
+        if(ok){
+          if(!cur) cur = { syms: [] };
+          cur.syms.push(sy);
+        }else{
+          if(cur) runs.push(cur);
+          cur = null;
+        }
+      });
+      if(cur) runs.push(cur);
+      const cands = runs.filter(rn=>rn.syms.filter(sy=>isKanaSym(sy.t)).length >= 2).map(rn=>{
+        // 先頭の「カ)」のように、直前の記号「(」「)」が略号の一部になっている場合も拾う
+        const txt = rn.syms.map(sy=>sy.t).join('');
+        const cs = rn.syms.map(sy=>sy.c).filter(x=>typeof x === 'number');
+        return { text: toHalfKana(txt), conf: cs.length ? cs.reduce((a,b)=>a+b,0)/cs.length : null,
+          x0: bandX0 + (rn.syms[0].x0 - PAD) / sx, x1: bandX0 + (rn.syms[rn.syms.length-1].x1 - PAD) / sx, y0: r._y0, y1: r._y1 };
+      });
+      if(!cands.length) continue;
+      if(DBG) console.log('[kana-cands] ' + JSON.stringify({desc:r.desc, words:(r._descWords||[]).map(w=>[w.text,Math.round(w.x0),Math.round(w.x1),w.conf&&Math.round(w.conf)]), cands:cands.map(c=>[c.text,Math.round(c.x0),Math.round(c.x1),Math.round(c.conf)])}));
+      // 候補の範囲に中心がある元の単語を置き換える（漢字だけで自信の高い語は残す）
+      const margin = th * 0.3;
+      const words = (r._descWords || []).filter(w=>{
+        if(keep.includes(w)) return true;
+        const wW = Math.max(1, w.x1 - w.x0);
+        return !cands.some(cd=>(Math.min(w.x1, cd.x1 + margin) - Math.max(w.x0, cd.x0 - margin)) / wW >= 0.5);
+      });
+      const merged = words.concat(cands).sort((a,b)=>a.x0-b.x0);
+      // 通帳では漢字とカナの間は空白で区切られていることが多い
+      const fixed = joinWordsSmart(merged).replace(/([\u4e00-\u9fff々])([ｦ-ﾟ])/g, '$1 $2');
+      if(!fixed || fixed === r.desc) continue;
+      if(DBG) console.log('[kana-fix] "' + r.desc + '" -> "' + fixed + '"');
+      r.desc = fixed;
+      r._descOcr = fixed;
+      r._descFixed = true;
+      const cs = merged.map(w=>w.conf).filter(x=>typeof x === 'number');
+      r._descConf = cs.length ? Math.min(...cs) : r._descConf;
+    }
+  }
+
   function joinWordsSmart(arr){
     const sorted = [...arr].sort((a,b)=>a.x0-b.x0);
     let result = '';
@@ -1920,7 +2084,8 @@
       desc: t(buckets.desc),
       withdrawal: normalizeAmount(t(buckets.withdrawal)),
       deposit: normalizeAmount(t(buckets.deposit)),
-      balance: normalizeAmount(t(buckets.balance))
+      balance: normalizeAmount(t(buckets.balance)),
+      descWords: buckets.desc.slice()
     };
     if(DBG){
       const dump = k => JSON.stringify(buckets[k].map(w=>w.text));
@@ -1945,6 +2110,7 @@
         if(prev && (r._y0 - prev._y1) <= gapMax){
           prev.desc = prev.desc ? (prev.desc + ' ' + r.desc) : r.desc;
           if(prev._descOcr !== undefined) prev._descOcr = prev.desc;
+          prev._descMerged = true;
           if(r._y1 != null) prev._y1 = Math.max(prev._y1 != null ? prev._y1 : r._y1, r._y1);
           if(DBG) console.log('[orphan-merge<-] "' + r.desc + '" into "' + prev.desc + '"');
           return;
@@ -1956,6 +2122,7 @@
         if(prev && !isData(prev) && prev.desc && !HEADER_KW_RE.test(prev.desc) && (r._y0 - prev._y1) <= gapMax){
           r.desc = prev.desc + (r.desc ? ' ' + r.desc : '');
           if(r._descOcr !== undefined) r._descOcr = r.desc;
+          r._descMerged = true;
           if(prev._y0 != null) r._y0 = Math.min(r._y0 != null ? r._y0 : prev._y0, prev._y0);
           if(DBG) console.log('[orphan-merge->] "' + prev.desc + '" into "' + r.desc + '"');
           out.pop();
@@ -1995,7 +2162,9 @@
       const rowY1 = Math.max(...line.map(w=>w.y1));
 
       // _descOcr: OCRが最初に読んだ摘要。ユーザーが直した後も保持し、学習・候補照合の元にする。
-      return { date: rawDate, desc, _descOcr: desc, withdrawal, deposit, balance, lowConfidence: lowConfidence || line.length < 2, _y: rowY, _y0: rowY0, _y1: rowY1, _lineIdx: lineIdx };
+      const dConfs = (b.descWords || []).map(w=>w.conf).filter(c=>typeof c === 'number');
+      return { date: rawDate, desc, _descOcr: desc, withdrawal, deposit, balance, lowConfidence: lowConfidence || line.length < 2, _y: rowY, _y0: rowY0, _y1: rowY1, _lineIdx: lineIdx,
+        _descWords: desc ? (b.descWords || []) : [], _descConf: dConfs.length ? Math.min(...dConfs) : null };
     });
 
     // 2.1) 完全に空の行を落とす
@@ -2292,6 +2461,9 @@
         withdrawal: get('withdrawal'), deposit: get('deposit'), balance: get('balance'),
         acct: get('acct'),
         lowConfidence: tr.dataset.lowConfidence === '1',
+        _descConf: tr.dataset.descConf !== undefined ? parseFloat(tr.dataset.descConf) : null,
+        _descChecked: tr.dataset.descChecked === '1',
+        _descFixed: tr.dataset.descFixed === '1',
         _descOcr: tr.dataset.descOcr !== undefined ? tr.dataset.descOcr : undefined,
         _y0: tr.dataset.y0 !== undefined ? parseFloat(tr.dataset.y0) : undefined,
         _y1: tr.dataset.y1 !== undefined ? parseFloat(tr.dataset.y1) : undefined
@@ -2350,6 +2522,22 @@
     recheckReconciliation();
   }
 
+  function applyDescSuspect(tr){
+    const cell = tr.querySelector('td.desc-cell');
+    const inp = tr.querySelector('input[data-field="desc"]');
+    if(!cell || !inp) return;
+    const conf = tr.dataset.descConf !== undefined ? parseFloat(tr.dataset.descConf) : null;
+    const checked = tr.dataset.descChecked === '1';
+    const fixed = !checked && tr.dataset.descFixed === '1';
+    // 読み直した摘要は、OCRの自信度が高くても間違っていることがあるため、自信度では判定しない
+    const why = checked ? '' : descSuspicion(inp.value, fixed ? null : conf);
+    cell.classList.toggle('suspect', !!why);
+    cell.classList.toggle('refixed', !why && fixed);
+    if(why) inp.title = why + '（直すとこの色は消えます）';
+    else if(fixed) inp.title = '半角カナを自動で読み直しました。元の通帳と見比べて確認してください（直すとこの色は消えます）。';
+    else inp.removeAttribute('title');
+  }
+
   function addRow(r){
     r = r || {date:'',desc:'',withdrawal:'',deposit:'',balance:'',lowConfidence:false};
     const tbody = el('resultBody');
@@ -2358,6 +2546,9 @@
     if(ph) ph.remove();
     const tr = document.createElement('tr');
     tr.dataset.lowConfidence = r.lowConfidence ? '1' : '0';
+    if(typeof r._descConf === 'number') tr.dataset.descConf = String(r._descConf);
+    if(r._descChecked) tr.dataset.descChecked = '1';
+    if(r._descFixed) tr.dataset.descFixed = '1';
     // 元のOCR摘要を保持（手修正後も学習・候補照合に使う）
     tr.dataset.descOcr = (r._descOcr !== undefined && r._descOcr !== null ? r._descOcr : (r.desc || '')) || '';
     if(r._y0 !== undefined && r._y0 !== null) tr.dataset.y0 = r._y0;
@@ -2384,6 +2575,8 @@
       ev.stopPropagation();
       rowOp(tr, b.dataset.op);
     });
+
+    applyDescSuspect(tr);
 
     // 学習辞書からの修正候補（✎チップ）。クリックで摘要を置き換える。
     const sug = suggestDesc(tr.dataset.descOcr);
@@ -2876,6 +3069,9 @@
       }else if(tr.dataset.lowConfidence === '1'){
         flagCell.classList.add('low');
         flagCell.title = 'この行はOCRの自信度が低いです。目視確認を推奨します。';
+      }else if(tr.querySelector('td.desc-cell.suspect')){
+        flagCell.classList.add('low');
+        flagCell.title = '摘要の読み違いの可能性があります。黄色のマスを確認してください。';
       }else{
         flagCell.removeAttribute('title');
       }
@@ -2907,7 +3103,13 @@
   ['jsAccountName','jsSubAccount','jsDefaultCounter','jsDefaultTax'].forEach(id=>{
     el(id).addEventListener('input', saveJournalSettings);
   });
-  el('resultBody').addEventListener('input', ()=>{
+  el('resultBody').addEventListener('input', e=>{
+    // 摘要を手で直したら「確認済み」として黄色を消す
+    const inp = e.target;
+    if(inp && inp.getAttribute && inp.getAttribute('data-field') === 'desc'){
+      const tr = inp.closest('tr');
+      if(tr){ tr.dataset.descChecked = '1'; applyDescSuspect(tr); }
+    }
     clearTimeout(window.__reconTimer);
     window.__reconTimer = setTimeout(()=>{ recheckReconciliation(); syncActivePageFromTable(); scheduleSessionSave(); }, 400);
   });
